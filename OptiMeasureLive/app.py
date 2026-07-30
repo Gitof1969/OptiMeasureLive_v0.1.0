@@ -86,6 +86,7 @@ APP_NAME = "OptiMeasure Live"
 APP_VERSION = "0.1.0"
 
 Point = tuple[float, float]
+ScaleBar = tuple[float, str]
 
 TOOL_POINT_COUNTS = {
     "calibration": 2,
@@ -184,6 +185,7 @@ class ImageCanvas(QGraphicsView):
     point_move_finished = Signal(int, int)
     measurement_moved = Signal(int, object)
     measurement_move_finished = Signal(int)
+    image_size_changed = Signal()
     cursor_position = Signal(float, float)
     hint = Signal(str)
 
@@ -252,6 +254,8 @@ class ImageCanvas(QGraphicsView):
         self.scene().setSceneRect(QRectF(0, 0, width, height))
         if size_changed or self._auto_fit:
             self.fit_image()
+        if size_changed:
+            self.image_size_changed.emit()
 
     def fit_image(self) -> None:
         if self.has_image:
@@ -488,11 +492,62 @@ class ImageCanvas(QGraphicsView):
         self.scene().addItem(item)
         collection.append(item)
 
+    def _render_scale_bar(
+        self,
+        mm_per_pixel: float | None,
+        scale_bar: ScaleBar | None,
+    ) -> None:
+        if not self._image_size or not mm_per_pixel or not scale_bar:
+            return
+        length_px = scale_bar_pixels(scale_bar, mm_per_pixel)
+        width, height = self._image_size
+        margin = max(16.0, min(width, height) * 0.03)
+        if length_px <= 0 or length_px > width - 2 * margin:
+            return
+
+        end_x = width - margin
+        start_x = end_x - length_px
+        bar_y = height - margin
+        tick_height = max(8.0, min(width, height) * 0.012)
+        shadow = QColor("#101010")
+        foreground = QColor("#ffffff")
+
+        for color, line_width in [(shadow, 7.0), (foreground, 3.0)]:
+            self._add_line(
+                (start_x, bar_y),
+                (end_x, bar_y),
+                color,
+                self._overlay_items,
+                width=line_width,
+            )
+            self._add_line(
+                (start_x, bar_y - tick_height / 2),
+                (start_x, bar_y + tick_height / 2),
+                color,
+                self._overlay_items,
+                width=line_width,
+            )
+            self._add_line(
+                (end_x, bar_y - tick_height / 2),
+                (end_x, bar_y + tick_height / 2),
+                color,
+                self._overlay_items,
+                width=line_width,
+            )
+
+        self._add_text(
+            (start_x, bar_y - tick_height - 22),
+            scale_bar_label(scale_bar),
+            foreground,
+            self._overlay_items,
+        )
+
     def render_measurements(
         self,
         measurements: list[Measurement],
         mm_per_pixel: float | None,
         display_unit: str,
+        scale_bar: ScaleBar | None = None,
     ) -> None:
         self.clear_overlays()
         for measurement in measurements:
@@ -554,6 +609,7 @@ class ImageCanvas(QGraphicsView):
                     color,
                     self._overlay_items,
                 )
+        self._render_scale_bar(mm_per_pixel, scale_bar)
 
     def mousePressEvent(self, event) -> None:
         if (
@@ -757,6 +813,24 @@ def format_number(value: float) -> str:
     return f"{value:.5f}"
 
 
+def scale_bar_length_mm(scale_bar: ScaleBar) -> float:
+    value, unit = scale_bar
+    return value / 1000.0 if unit == "µm" else value
+
+
+def scale_bar_pixels(scale_bar: ScaleBar, mm_per_pixel: float) -> float:
+    if mm_per_pixel <= 0:
+        return 0.0
+    return scale_bar_length_mm(scale_bar) / mm_per_pixel
+
+
+def scale_bar_label(scale_bar: ScaleBar, ascii_only: bool = False) -> str:
+    value, unit = scale_bar
+    if ascii_only and unit == "µm":
+        unit = "um"
+    return f"{value:.6g} {unit}"
+
+
 def measurement_value(
     measurement: Measurement,
     mm_per_pixel: float | None,
@@ -831,12 +905,70 @@ def put_cv_label(
     )
 
 
+def draw_cv_scale_bar(
+    image: np.ndarray,
+    mm_per_pixel: float | None,
+    scale_bar: ScaleBar | None,
+) -> None:
+    if not mm_per_pixel or not scale_bar:
+        return
+
+    height, width = image.shape[:2]
+    length_px = scale_bar_pixels(scale_bar, mm_per_pixel)
+    margin = max(16, round(min(width, height) * 0.03))
+    if length_px <= 0 or length_px > width - 2 * margin:
+        return
+
+    end_x = width - margin
+    start_x = round(end_x - length_px)
+    bar_y = height - margin
+    tick_height = max(8, round(min(width, height) * 0.012))
+    line_width = max(2, round(width / 800))
+    shadow_width = line_width + max(3, round(width / 500))
+    label_scale = max(0.55, min(1.5, width / 1400.0))
+    label_thickness = max(1, round(label_scale * 2))
+
+    segments = [
+        ((start_x, bar_y), (end_x, bar_y)),
+        (
+            (start_x, bar_y - tick_height // 2),
+            (start_x, bar_y + tick_height // 2),
+        ),
+        (
+            (end_x, bar_y - tick_height // 2),
+            (end_x, bar_y + tick_height // 2),
+        ),
+    ]
+    for first, second in segments:
+        cv2.line(image, first, second, (10, 10, 10), shadow_width, cv2.LINE_AA)
+        cv2.line(image, first, second, (255, 255, 255), line_width, cv2.LINE_AA)
+
+    label = scale_bar_label(scale_bar, ascii_only=True)
+    label_size, _baseline = cv2.getTextSize(
+        label,
+        cv2.FONT_HERSHEY_SIMPLEX,
+        label_scale,
+        label_thickness,
+    )
+    label_x = max(4, end_x - label_size[0])
+    label_y = max(18, bar_y - tick_height - 8)
+    put_cv_label(
+        image,
+        (label_x, label_y),
+        label,
+        (255, 255, 255),
+        label_scale,
+        label_thickness,
+    )
+
+
 def annotate_frame(
     frame: np.ndarray,
     measurements: list[Measurement],
     mm_per_pixel: float | None,
     display_unit: str,
     crosshair: bool,
+    scale_bar: ScaleBar | None = None,
 ) -> np.ndarray:
     image = frame.copy()
     height, width = image.shape[:2]
@@ -924,6 +1056,7 @@ def annotate_frame(
 
         put_cv_label(image, position, label, color, factor * 0.55, thickness)
 
+    draw_cv_scale_bar(image, mm_per_pixel, scale_bar)
     return image
 
 
@@ -968,6 +1101,7 @@ class MainWindow(QMainWindow):
         self.canvas.measurement_move_finished.connect(
             self.finish_measurement_move
         )
+        self.canvas.image_size_changed.connect(self.refresh_measurements)
         self.canvas.cursor_position.connect(self.show_cursor_position)
         self.canvas.hint.connect(self.statusBar().showMessage)
 
@@ -1153,6 +1287,29 @@ class MainWindow(QMainWindow):
         self.crosshair_check.toggled.connect(self.canvas.set_crosshair_visible)
         layout.addWidget(self.crosshair_check, 3, 0, 1, 2)
 
+        scale_bar_row = QHBoxLayout()
+        self.scale_bar_check = QCheckBox("Échelle")
+        self.scale_bar_check.setToolTip(
+            "Afficher une barre d’échelle en bas à droite de l’image"
+        )
+        self.scale_bar_length = QDoubleSpinBox()
+        self.scale_bar_length.setDecimals(5)
+        self.scale_bar_length.setRange(0.00001, 1_000_000)
+        self.scale_bar_length.setValue(1.0)
+        self.scale_bar_length.setKeyboardTracking(False)
+        self.scale_bar_unit = QComboBox()
+        self.scale_bar_unit.addItems(["mm", "µm"])
+        scale_bar_row.addWidget(self.scale_bar_check)
+        scale_bar_row.addWidget(self.scale_bar_length, 1)
+        scale_bar_row.addWidget(self.scale_bar_unit)
+        layout.addLayout(scale_bar_row, 4, 0, 1, 2)
+
+        self.scale_bar_check.toggled.connect(self.on_scale_bar_changed)
+        self.scale_bar_length.valueChanged.connect(self.on_scale_bar_changed)
+        self.scale_bar_unit.currentTextChanged.connect(self.on_scale_bar_changed)
+        self.scale_bar_length.setEnabled(False)
+        self.scale_bar_unit.setEnabled(False)
+
         edit_help = QLabel(
             "Recliquer sur l’outil actif pour le désactiver, puis "
             "cliquer-glisser un point pour le corriger ou une ligne "
@@ -1160,14 +1317,14 @@ class MainWindow(QMainWindow):
         )
         edit_help.setWordWrap(True)
         edit_help.setStyleSheet("color: #7f8a94;")
-        layout.addWidget(edit_help, 4, 0, 1, 2)
+        layout.addWidget(edit_help, 5, 0, 1, 2)
 
         self.undo_button = QPushButton("Annuler dernière")
         self.undo_button.clicked.connect(self.undo_measurement)
         self.clear_button = QPushButton("Tout effacer")
         self.clear_button.clicked.connect(self.clear_measurements)
-        layout.addWidget(self.undo_button, 5, 0)
-        layout.addWidget(self.clear_button, 5, 1)
+        layout.addWidget(self.undo_button, 6, 0)
+        layout.addWidget(self.clear_button, 6, 1)
         return group
 
     def _build_results_group(self) -> QGroupBox:
@@ -1243,6 +1400,17 @@ class MainWindow(QMainWindow):
         self.display_unit.setCurrentText(
             str(self.settings.value("measurement/unit", "mm"))
         )
+        self.scale_bar_length.setValue(
+            float(self.settings.value("measurement/scale_bar_length", 1.0))
+        )
+        self.scale_bar_unit.setCurrentText(
+            str(self.settings.value("measurement/scale_bar_unit", "mm"))
+        )
+        self.scale_bar_check.setChecked(
+            self.settings.value(
+                "measurement/scale_bar_enabled", False, type=bool
+            )
+        )
         geometry = self.settings.value("window/geometry")
         if geometry:
             self.restoreGeometry(geometry)
@@ -1258,6 +1426,15 @@ class MainWindow(QMainWindow):
         self.settings.setValue("camera/fps", self.fps_spin.value())
         self.settings.setValue("capture/keep_raw", self.keep_raw_check.isChecked())
         self.settings.setValue("measurement/unit", self.display_unit.currentText())
+        self.settings.setValue(
+            "measurement/scale_bar_enabled", self.scale_bar_check.isChecked()
+        )
+        self.settings.setValue(
+            "measurement/scale_bar_length", self.scale_bar_length.value()
+        )
+        self.settings.setValue(
+            "measurement/scale_bar_unit", self.scale_bar_unit.currentText()
+        )
         self.settings.setValue(
             "calibration/profile", self.profile_combo.currentText().strip()
         )
@@ -1468,8 +1645,28 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "results_table"):
             return
         unit = self.display_unit.currentText()
-        self.canvas.render_measurements(self.measurements, self.mm_per_pixel, unit)
+        self.canvas.render_measurements(
+            self.measurements,
+            self.mm_per_pixel,
+            unit,
+            self.selected_scale_bar(),
+        )
         self._update_measurement_table()
+
+    def selected_scale_bar(self) -> ScaleBar | None:
+        if not self.scale_bar_check.isChecked():
+            return None
+        return self.scale_bar_length.value(), self.scale_bar_unit.currentText()
+
+    def on_scale_bar_changed(self, *_args) -> None:
+        enabled = self.scale_bar_check.isChecked()
+        self.scale_bar_length.setEnabled(enabled)
+        self.scale_bar_unit.setEnabled(enabled)
+        self.refresh_measurements()
+        if enabled and not self.mm_per_pixel:
+            self.statusBar().showMessage(
+                "La barre d’échelle nécessite un profil d’étalonnage actif."
+            )
 
     def select_measurement(self, number: int) -> None:
         for row, measurement in enumerate(self.measurements):
@@ -1672,7 +1869,8 @@ class MainWindow(QMainWindow):
                 self.measurements,
                 self.mm_per_pixel,
                 self.display_unit.currentText(),
-                self.crosshair_check.isChecked(),
+                False,
+                self.selected_scale_bar(),
             )
             annotated_path = output / f"{base_name}.png"
             if not write_png(annotated_path, annotated):

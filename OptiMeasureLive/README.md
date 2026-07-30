@@ -99,6 +99,13 @@ Pour repositionner une mesure complète sans modifier sa valeur, cliquer-glisser
 directement sa ligne ou la circonférence de son cercle. Tous ses points se
 déplacent alors ensemble.
 
+La case **Échelle** ajoute une barre d’échelle en bas à droite. Saisir sa
+longueur et choisir `mm` ou `µm`. Un profil d’étalonnage actif est nécessaire.
+La barre est incluse dans la capture annotée.
+
+Le réticule central reste une aide à l’écran et n’est jamais enregistré dans
+les captures.
+
 ### Commandes
 
 | Action | Commande |
