@@ -58,6 +58,14 @@ python app.py
 
 ### 1. Démarrer la caméra
 
+Les flèches `▼` et `▶` permettent respectivement d’ouvrir et de replier les
+sections **Caméra**, **Objectif**, **Étalonnage**, **Mesures** et **Résultats**
+afin de libérer de la place dans le panneau latéral. Leur état est mémorisé.
+
+La section **Objectif**, située sous **Caméra**, reprend les profils enregistrés
+dans **Étalonnage**. Sélectionner un objectif charge immédiatement son échelle
+de calibration et synchronise la sélection dans les deux sections.
+
 Choisir :
 
 - `Index 0` pour la première caméra, puis 1, 2… si nécessaire ;

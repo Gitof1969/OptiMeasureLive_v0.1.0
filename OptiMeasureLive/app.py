@@ -58,19 +58,21 @@ from PySide6.QtWidgets import (
     QGraphicsSimpleTextItem,
     QGraphicsView,
     QGridLayout,
-    QGroupBox,
     QHeaderView,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QMainWindow,
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
     QStatusBar,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -204,6 +206,61 @@ class CalibrationStore:
         if name in self.profiles:
             del self.profiles[name]
             self.save()
+
+
+class CollapsibleSection(QWidget):
+    """Panel section with a clickable disclosure arrow."""
+
+    def __init__(self, title: str) -> None:
+        super().__init__()
+        self.toggle_button = QToolButton()
+        self.toggle_button.setText(title)
+        self.toggle_button.setCheckable(True)
+        self.toggle_button.setChecked(True)
+        self.toggle_button.setArrowType(Qt.ArrowType.DownArrow)
+        self.toggle_button.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self.toggle_button.setAutoRaise(True)
+        self.toggle_button.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        self.toggle_button.setStyleSheet(
+            "QToolButton { text-align: left; font-weight: bold; padding: 4px; }"
+        )
+        self.toggle_button.setToolTip(f"Replier la section {title}")
+
+        self.content = QFrame()
+        self.content.setFrameShape(QFrame.Shape.StyledPanel)
+
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(2)
+        root_layout.addWidget(self.toggle_button)
+        root_layout.addWidget(self.content)
+
+        self.toggle_button.toggled.connect(self._on_toggled)
+
+    def set_content_layout(self, layout: QLayout) -> None:
+        self.content.setLayout(layout)
+
+    def is_expanded(self) -> bool:
+        return self.toggle_button.isChecked()
+
+    def set_expanded(self, expanded: bool) -> None:
+        self.toggle_button.setChecked(expanded)
+        self._on_toggled(expanded)
+
+    def _on_toggled(self, expanded: bool) -> None:
+        self.content.setVisible(expanded)
+        self.toggle_button.setArrowType(
+            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+        )
+        action = "Replier" if expanded else "Déplier"
+        self.toggle_button.setToolTip(
+            f"{action} la section {self.toggle_button.text()}"
+        )
 
 
 class ImageCanvas(QGraphicsView):
@@ -1183,10 +1240,16 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(content)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
-        layout.addWidget(self._build_camera_group())
-        layout.addWidget(self._build_calibration_group())
-        layout.addWidget(self._build_measurement_group())
-        layout.addWidget(self._build_results_group(), 1)
+        self.sections: dict[str, CollapsibleSection] = {
+            "camera": self._build_camera_group(),
+            "objective": self._build_objective_group(),
+            "calibration": self._build_calibration_group(),
+            "measurements": self._build_measurement_group(),
+            "results": self._build_results_group(),
+        }
+        for section in self.sections.values():
+            layout.addWidget(section)
+        layout.addStretch(1)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -1194,9 +1257,10 @@ class MainWindow(QMainWindow):
         scroll.setWidget(content)
         return scroll
 
-    def _build_camera_group(self) -> QGroupBox:
-        group = QGroupBox("Caméra")
-        grid = QGridLayout(group)
+    def _build_camera_group(self) -> CollapsibleSection:
+        group = CollapsibleSection("Caméra")
+        grid = QGridLayout()
+        group.set_content_layout(grid)
 
         self.camera_index = QSpinBox()
         self.camera_index.setRange(0, 20)
@@ -1254,9 +1318,25 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.camera_status, 6, 0, 1, 2)
         return group
 
-    def _build_calibration_group(self) -> QGroupBox:
-        group = QGroupBox("Étalonnage")
-        layout = QFormLayout(group)
+    def _build_objective_group(self) -> CollapsibleSection:
+        group = CollapsibleSection("Objectif")
+        layout = QFormLayout()
+        group.set_content_layout(layout)
+
+        self.objective_combo = QComboBox()
+        self.objective_combo.setPlaceholderText("Aucun profil enregistré")
+        self.objective_combo.setEnabled(False)
+        self.objective_combo.activated.connect(self.load_objective_profile)
+        self.objective_combo.setToolTip(
+            "Charger rapidement un profil d’étalonnage enregistré"
+        )
+        layout.addRow("Profil", self.objective_combo)
+        return group
+
+    def _build_calibration_group(self) -> CollapsibleSection:
+        group = CollapsibleSection("Étalonnage")
+        layout = QFormLayout()
+        group.set_content_layout(layout)
 
         profile_row = QHBoxLayout()
         self.profile_combo = QComboBox()
@@ -1297,9 +1377,10 @@ class MainWindow(QMainWindow):
         layout.addRow("Unité affichée", self.display_unit)
         return group
 
-    def _build_measurement_group(self) -> QGroupBox:
-        group = QGroupBox("Mesures")
-        layout = QGridLayout(group)
+    def _build_measurement_group(self) -> CollapsibleSection:
+        group = CollapsibleSection("Mesures")
+        layout = QGridLayout()
+        group.set_content_layout(layout)
         self.tool_group = QButtonGroup(self)
         # The buttons behave like independent toggles so the active measurement
         # tool can be disabled by clicking it a second time.
@@ -1367,9 +1448,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.clear_button, 6, 1)
         return group
 
-    def _build_results_group(self) -> QGroupBox:
-        group = QGroupBox("Résultats")
-        layout = QVBoxLayout(group)
+    def _build_results_group(self) -> CollapsibleSection:
+        group = CollapsibleSection("Résultats")
+        layout = QVBoxLayout()
+        group.set_content_layout(layout)
         self.results_table = QTableWidget(0, 5)
         self.results_table.setHorizontalHeaderLabels(
             ["N°", "Nom", "Type", "Valeur", "Couleur"]
@@ -1463,6 +1545,12 @@ class MainWindow(QMainWindow):
                 "measurement/scale_bar_enabled", False, type=bool
             )
         )
+        for key, section in self.sections.items():
+            section.set_expanded(
+                self.settings.value(
+                    f"sections/{key}_expanded", True, type=bool
+                )
+            )
         geometry = self.settings.value("window/geometry")
         if geometry:
             self.restoreGeometry(geometry)
@@ -1487,6 +1575,10 @@ class MainWindow(QMainWindow):
         self.settings.setValue(
             "measurement/scale_bar_unit", self.scale_bar_unit.currentText()
         )
+        for key, section in self.sections.items():
+            self.settings.setValue(
+                f"sections/{key}_expanded", section.is_expanded()
+            )
         self.settings.setValue(
             "calibration/profile", self.profile_combo.currentText().strip()
         )
@@ -1494,15 +1586,40 @@ class MainWindow(QMainWindow):
 
     def _refresh_profiles(self, selected: str | None = None) -> None:
         current = selected or self.profile_combo.currentText().strip()
+        profile_names = sorted(self.calibration_store.profiles)
+
         self.profile_combo.blockSignals(True)
         self.profile_combo.clear()
-        self.profile_combo.addItems(sorted(self.calibration_store.profiles))
+        self.profile_combo.addItems(profile_names)
         if current:
             self.profile_combo.setCurrentText(current)
         elif self.profile_combo.count() == 0:
             self.profile_combo.setEditText("Objectif 1")
         self.profile_combo.blockSignals(False)
+
+        self.objective_combo.blockSignals(True)
+        self.objective_combo.clear()
+        self.objective_combo.addItems(profile_names)
+        objective_index = self.objective_combo.findText(current)
+        self.objective_combo.setCurrentIndex(objective_index)
+        self.objective_combo.setPlaceholderText(
+            "Sélectionner un profil"
+            if profile_names
+            else "Aucun profil enregistré"
+        )
+        self.objective_combo.setEnabled(bool(profile_names))
+        self.objective_combo.blockSignals(False)
+
         self.delete_profile_button.setEnabled(bool(self.calibration_store.profiles))
+
+    def load_objective_profile(self, *_args) -> None:
+        name = self.objective_combo.currentText().strip()
+        if name not in self.calibration_store.profiles:
+            return
+        self.profile_combo.blockSignals(True)
+        self.profile_combo.setCurrentText(name)
+        self.profile_combo.blockSignals(False)
+        self.load_selected_profile()
 
     def toggle_camera(self) -> None:
         if self.camera is not None:
@@ -1899,6 +2016,9 @@ class MainWindow(QMainWindow):
         profile = self.calibration_store.profiles.get(name)
         if not profile:
             return
+        self.objective_combo.blockSignals(True)
+        self.objective_combo.setCurrentText(name)
+        self.objective_combo.blockSignals(False)
         self.mm_per_pixel = float(profile["mm_per_pixel"])
         self._update_scale_label()
         self.refresh_measurements()
