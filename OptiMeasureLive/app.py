@@ -10,6 +10,7 @@ from __future__ import annotations
 import csv
 import json
 import sys
+import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -115,6 +116,7 @@ class Measurement:
     number: int
     kind: str
     points: list[Point]
+    name: str = ""
     created_at: str = field(
         default_factory=lambda: (
             datetime.now().astimezone().isoformat(timespec="seconds")
@@ -864,7 +866,17 @@ def measurement_label(
         "circle": "D",
         "calibration": "CAL",
     }[measurement.kind]
-    return f"{prefix}{measurement.number}: {format_number(value)} {unit}"
+    name = measurement.name.strip()
+    if ascii_only and name:
+        name = (
+            unicodedata.normalize("NFKD", name)
+            .encode("ascii", "ignore")
+            .decode("ascii")
+        )
+    identifier = f"{prefix}{measurement.number}"
+    if name:
+        identifier += f" {name}"
+    return f"{identifier}: {format_number(value)} {unit}"
 
 
 def cv_color(kind: str) -> tuple[int, int, int]:
@@ -1330,15 +1342,21 @@ class MainWindow(QMainWindow):
     def _build_results_group(self) -> QGroupBox:
         group = QGroupBox("Résultats")
         layout = QVBoxLayout(group)
-        self.results_table = QTableWidget(0, 3)
-        self.results_table.setHorizontalHeaderLabels(["N°", "Type", "Valeur"])
+        self.results_table = QTableWidget(0, 4)
+        self.results_table.setHorizontalHeaderLabels(
+            ["N°", "Nom", "Type", "Valeur"]
+        )
         self.results_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
         )
         self.results_table.setSelectionMode(
             QAbstractItemView.SelectionMode.SingleSelection
         )
-        self.results_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.results_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed
+        )
+        self.results_table.itemChanged.connect(self.on_measurement_name_changed)
         self.results_table.verticalHeader().setVisible(False)
         self.results_table.horizontalHeader().setStretchLastSection(True)
         self.results_table.setMinimumHeight(170)
@@ -1351,6 +1369,7 @@ class MainWindow(QMainWindow):
         help_label = QLabel(
             "Molette : zoom · glisser : déplacer · double-clic : ajuster "
             "l’image · point/mesure : cliquer-glisser pour modifier · "
+            "double-clic sur « Nom » : renommer · "
             "clic droit/Échap : annuler l’outil."
         )
         help_label.setWordWrap(True)
@@ -1742,21 +1761,53 @@ class MainWindow(QMainWindow):
     def _update_measurement_table(self) -> None:
         if not hasattr(self, "results_table"):
             return
-        self.results_table.setRowCount(len(self.measurements))
-        unit = self.display_unit.currentText()
-        for row, measurement in enumerate(self.measurements):
-            number_item = QTableWidgetItem(str(measurement.number))
-            type_item = QTableWidgetItem(TOOL_NAMES[measurement.kind])
-            value, value_unit = measurement_value(measurement, self.mm_per_pixel, unit)
-            value_item = QTableWidgetItem(f"{format_number(value)} {value_unit}")
-            self.results_table.setItem(row, 0, number_item)
-            self.results_table.setItem(row, 1, type_item)
-            self.results_table.setItem(row, 2, value_item)
+        self.results_table.blockSignals(True)
+        try:
+            self.results_table.setRowCount(len(self.measurements))
+            unit = self.display_unit.currentText()
+            for row, measurement in enumerate(self.measurements):
+                number_item = QTableWidgetItem(str(measurement.number))
+                number_item.setFlags(
+                    number_item.flags() & ~Qt.ItemFlag.ItemIsEditable
+                )
+                name_item = QTableWidgetItem(measurement.name)
+                type_item = QTableWidgetItem(TOOL_NAMES[measurement.kind])
+                type_item.setFlags(type_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                value, value_unit = measurement_value(
+                    measurement, self.mm_per_pixel, unit
+                )
+                value_item = QTableWidgetItem(
+                    f"{format_number(value)} {value_unit}"
+                )
+                value_item.setFlags(
+                    value_item.flags() & ~Qt.ItemFlag.ItemIsEditable
+                )
+                self.results_table.setItem(row, 0, number_item)
+                self.results_table.setItem(row, 1, name_item)
+                self.results_table.setItem(row, 2, type_item)
+                self.results_table.setItem(row, 3, value_item)
+        finally:
+            self.results_table.blockSignals(False)
         self.results_table.resizeColumnToContents(0)
-        self.results_table.resizeColumnToContents(1)
+        self.results_table.setColumnWidth(1, max(100, self.results_table.columnWidth(1)))
+        self.results_table.resizeColumnToContents(2)
         self.undo_button.setEnabled(bool(self.measurements))
         self.clear_button.setEnabled(bool(self.measurements))
         self.export_button.setEnabled(bool(self.measurements))
+
+    def on_measurement_name_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() != 1:
+            return
+        row = item.row()
+        if not 0 <= row < len(self.measurements):
+            return
+        measurement = self.measurements[row]
+        measurement.name = item.text().strip()
+        self.refresh_measurements()
+        self.select_measurement(measurement.number)
+        self.statusBar().showMessage(
+            f"Nom de la mesure {measurement.number} mis à jour."
+        )
 
     def _update_scale_label(self) -> None:
         if not self.mm_per_pixel:
@@ -1914,6 +1965,7 @@ class MainWindow(QMainWindow):
                 writer.writerow(
                     [
                         "numero",
+                        "nom",
                         "type",
                         "valeur",
                         "unite",
@@ -1936,6 +1988,7 @@ class MainWindow(QMainWindow):
                     writer.writerow(
                         [
                             measurement.number,
+                            measurement.name,
                             TOOL_NAMES[measurement.kind],
                             f"{value:.10g}",
                             value_unit,

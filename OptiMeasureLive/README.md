@@ -99,6 +99,11 @@ Pour repositionner une mesure complète sans modifier sa valeur, cliquer-glisser
 directement sa ligne ou la circonférence de son cercle. Tous ses points se
 déplacent alors ensemble.
 
+Dans le tableau des résultats, double-cliquer sur la colonne **Nom** pour
+identifier une mesure. Par exemple, le nom `toto` produit l’annotation
+`L1 toto: 12.34 mm`. Si le nom est vide, l’annotation reste `L1: 12.34 mm`.
+Le nom est également inclus dans l’export CSV.
+
 La case **Échelle** ajoute une barre d’échelle en bas à droite. Saisir sa
 longueur et choisir `mm` ou `µm`. Un profil d’étalonnage actif est nécessaire.
 La barre est incluse dans la capture annotée.
