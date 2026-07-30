@@ -88,7 +88,7 @@ from geometry import (
 )
 
 APP_NAME = "OptiMeasure Live"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 
 Point = tuple[float, float]
 ScaleBar = tuple[float, str]

@@ -3,7 +3,7 @@
 Application open source d’acquisition et de mesure dimensionnelle pour caméra
 USB, inspirée des logiciels de type DinoCapture.
 
-La version 0.1 comprend :
+La version 0.2.0 comprend :
 
 - acquisition en direct d’une caméra UVC/DirectShow ;
 - sélection de la résolution, de la cadence et de l’interface vidéo ;
@@ -14,6 +14,11 @@ La version 0.1 comprend :
 - mesure de distance par deux points ;
 - mesure d’angle par trois points (A-B-C, sommet en B) ;
 - diamètre d’un cercle passant par trois points ;
+- modification d’un point et déplacement complet d’une mesure ;
+- noms et couleurs personnalisables dans le tableau des résultats ;
+- barre d’échelle paramétrable ajoutée aux captures ;
+- réticule visible à l’écran mais exclu des images enregistrées ;
+- sections repliables et sélection rapide des profils par objectif ;
 - suppression individuelle, annulation et remise à zéro des mesures ;
 - captures annotée et brute en pleine résolution ;
 - export CSV des résultats et des coordonnées image.
