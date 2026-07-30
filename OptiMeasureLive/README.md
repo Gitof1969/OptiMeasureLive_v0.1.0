@@ -95,6 +95,10 @@ Pour corriger une mesure existante, désactiver d’abord l’outil de mesure pu
 cliquer-glisser l’un de ses points. La forme, la valeur affichée dans l’image et
 le tableau des résultats sont recalculés pendant le déplacement.
 
+Pour repositionner une mesure complète sans modifier sa valeur, cliquer-glisser
+directement sa ligne ou la circonférence de son cercle. Tous ses points se
+déplacent alors ensemble.
+
 ### Commandes
 
 | Action | Commande |
@@ -102,6 +106,7 @@ le tableau des résultats sont recalculés pendant le déplacement.
 | Zoom | Molette |
 | Déplacer l’image | Glisser lorsque aucun outil n’est actif |
 | Modifier un point de mesure | Désactiver l’outil, puis cliquer-glisser le point |
+| Déplacer toute une mesure | Cliquer-glisser sa ligne ou sa circonférence |
 | Ajuster toute l’image | Double-clic ou touche `F` |
 | Annuler le pointage en cours | Clic droit ou `Échap` |
 | Annuler la dernière mesure | `Ctrl+Z` |

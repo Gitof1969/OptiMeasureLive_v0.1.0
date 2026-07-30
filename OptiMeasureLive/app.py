@@ -182,6 +182,8 @@ class ImageCanvas(QGraphicsView):
     point_selected = Signal(int)
     point_moved = Signal(int, int, object)
     point_move_finished = Signal(int, int)
+    measurement_moved = Signal(int, object)
+    measurement_move_finished = Signal(int)
     cursor_position = Signal(float, float)
     hint = Signal(str)
 
@@ -200,8 +202,12 @@ class ImageCanvas(QGraphicsView):
         self._editable_points: list[
             tuple[int, int, Point, QGraphicsEllipseItem, QColor]
         ] = []
+        self._editable_measurements: list[tuple[int, str, tuple[Point, ...]]] = []
         self._selected_point: tuple[int, int] | None = None
         self._dragged_point: tuple[int, int] | None = None
+        self._dragged_measurement: int | None = None
+        self._measurement_drag_origin: Point | None = None
+        self._measurement_drag_points: tuple[Point, ...] = ()
         self._crosshair_visible = True
         self._auto_fit = True
 
@@ -259,6 +265,9 @@ class ImageCanvas(QGraphicsView):
     def set_tool(self, tool: str | None) -> None:
         self.cancel_pending()
         self._dragged_point = None
+        self._dragged_measurement = None
+        self._measurement_drag_origin = None
+        self._measurement_drag_points = ()
         self._set_selected_point(None)
         self._active_tool = tool
         if tool:
@@ -281,6 +290,7 @@ class ImageCanvas(QGraphicsView):
         self._remove_items(self._overlay_items)
         self._overlay_items.clear()
         self._editable_points.clear()
+        self._editable_measurements.clear()
 
     def _remove_items(self, items: Iterable[QGraphicsItem]) -> None:
         for item in list(items):
@@ -357,6 +367,94 @@ class ImageCanvas(QGraphicsView):
             max(0.0, min(height - 1.0, point.y())),
         )
 
+    @staticmethod
+    def _distance_to_segment(
+        point: Point, first: Point, second: Point
+    ) -> float:
+        delta_x = second[0] - first[0]
+        delta_y = second[1] - first[1]
+        length_squared = delta_x * delta_x + delta_y * delta_y
+        if length_squared <= 1e-12:
+            return distance_px(point, first)
+        projection = (
+            (point[0] - first[0]) * delta_x
+            + (point[1] - first[1]) * delta_y
+        ) / length_squared
+        projection = max(0.0, min(1.0, projection))
+        closest = (
+            first[0] + projection * delta_x,
+            first[1] + projection * delta_y,
+        )
+        return distance_px(point, closest)
+
+    def _measurement_at_view_position(self, position: QPointF) -> int | None:
+        """Find a measurement line or circumference near the mouse pointer."""
+
+        cursor = (position.x(), position.y())
+        hit_distance = 8.0
+        closest_number: int | None = None
+        closest_distance = hit_distance
+
+        for number, kind, points in self._editable_measurements:
+            view_points = [
+                self.mapFromScene(QPointF(*point))
+                for point in points
+            ]
+            converted = [
+                (float(point.x()), float(point.y()))
+                for point in view_points
+            ]
+
+            distances: list[float]
+            if kind in {"distance", "calibration"}:
+                distances = [
+                    self._distance_to_segment(cursor, converted[0], converted[1])
+                ]
+            elif kind == "angle":
+                distances = [
+                    self._distance_to_segment(cursor, converted[1], converted[0]),
+                    self._distance_to_segment(cursor, converted[1], converted[2]),
+                ]
+            else:
+                try:
+                    circle = circle_from_three_points(*points)
+                except GeometryError:
+                    continue
+                center_view = self.mapFromScene(QPointF(*circle.center))
+                center = (float(center_view.x()), float(center_view.y()))
+                radius = distance_px(center, converted[0])
+                distances = [abs(distance_px(cursor, center) - radius)]
+
+            distance = min(distances)
+            if distance <= closest_distance:
+                closest_number = number
+                closest_distance = distance
+
+        return closest_number
+
+    def _translated_measurement_points(self, current: QPointF) -> list[Point]:
+        if (
+            self._measurement_drag_origin is None
+            or not self._measurement_drag_points
+        ):
+            return []
+
+        delta_x = current.x() - self._measurement_drag_origin[0]
+        delta_y = current.y() - self._measurement_drag_origin[1]
+        if self._image_size:
+            width, height = self._image_size
+            minimum_x = min(point[0] for point in self._measurement_drag_points)
+            maximum_x = max(point[0] for point in self._measurement_drag_points)
+            minimum_y = min(point[1] for point in self._measurement_drag_points)
+            maximum_y = max(point[1] for point in self._measurement_drag_points)
+            delta_x = max(-minimum_x, min(width - 1.0 - maximum_x, delta_x))
+            delta_y = max(-minimum_y, min(height - 1.0 - maximum_y, delta_y))
+
+        return [
+            (point[0] + delta_x, point[1] + delta_y)
+            for point in self._measurement_drag_points
+        ]
+
     def _add_line(
         self,
         first: Point,
@@ -400,6 +498,9 @@ class ImageCanvas(QGraphicsView):
         for measurement in measurements:
             points = measurement.points
             color = TOOL_COLORS[measurement.kind]
+            self._editable_measurements.append(
+                (measurement.number, measurement.kind, tuple(points))
+            )
             for point_index, point in enumerate(points):
                 key = (measurement.number, point_index)
                 marker = self._add_point_marker(
@@ -501,6 +602,7 @@ class ImageCanvas(QGraphicsView):
             selected = self._point_at_view_position(event.position())
             if selected is not None:
                 self._dragged_point = selected
+                self._dragged_measurement = None
                 self._set_selected_point(selected)
                 self.setDragMode(QGraphicsView.DragMode.NoDrag)
                 self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
@@ -508,6 +610,36 @@ class ImageCanvas(QGraphicsView):
                 self.hint.emit(
                     "Point sélectionné : maintenir le clic et déplacer pour ajuster "
                     "la mesure."
+                )
+                event.accept()
+                return
+
+            selected_measurement = self._measurement_at_view_position(
+                event.position()
+            )
+            if selected_measurement is not None:
+                measurement = next(
+                    (
+                        points
+                        for number, _kind, points in self._editable_measurements
+                        if number == selected_measurement
+                    ),
+                    (),
+                )
+                scene_position = self.mapToScene(event.position().toPoint())
+                self._dragged_measurement = selected_measurement
+                self._measurement_drag_origin = (
+                    scene_position.x(),
+                    scene_position.y(),
+                )
+                self._measurement_drag_points = measurement
+                self._set_selected_point(None)
+                self.setDragMode(QGraphicsView.DragMode.NoDrag)
+                self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+                self.point_selected.emit(selected_measurement)
+                self.hint.emit(
+                    "Mesure sélectionnée : maintenir le clic et déplacer "
+                    "pour la repositionner."
                 )
                 event.accept()
                 return
@@ -528,12 +660,22 @@ class ImageCanvas(QGraphicsView):
             event.accept()
             return
 
+        if self._dragged_measurement is not None:
+            translated_points = self._translated_measurement_points(point)
+            if translated_points:
+                self.measurement_moved.emit(
+                    self._dragged_measurement, translated_points
+                )
+            event.accept()
+            return
+
         if self._active_tool is None:
-            cursor = (
-                Qt.CursorShape.PointingHandCursor
-                if self._point_at_view_position(event.position()) is not None
-                else Qt.CursorShape.OpenHandCursor
-            )
+            if self._point_at_view_position(event.position()) is not None:
+                cursor = Qt.CursorShape.PointingHandCursor
+            elif self._measurement_at_view_position(event.position()) is not None:
+                cursor = Qt.CursorShape.SizeAllCursor
+            else:
+                cursor = Qt.CursorShape.OpenHandCursor
             self.viewport().setCursor(cursor)
         super().mouseMoveEvent(event)
 
@@ -547,6 +689,20 @@ class ImageCanvas(QGraphicsView):
             self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
             self.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
             self.point_move_finished.emit(number, point_index)
+            event.accept()
+            return
+
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._dragged_measurement is not None
+        ):
+            number = self._dragged_measurement
+            self._dragged_measurement = None
+            self._measurement_drag_origin = None
+            self._measurement_drag_points = ()
+            self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+            self.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
+            self.measurement_move_finished.emit(number)
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -808,6 +964,10 @@ class MainWindow(QMainWindow):
         self.canvas.point_selected.connect(self.select_measurement)
         self.canvas.point_moved.connect(self.move_measurement_point)
         self.canvas.point_move_finished.connect(self.finish_measurement_point_move)
+        self.canvas.measurement_moved.connect(self.move_measurement)
+        self.canvas.measurement_move_finished.connect(
+            self.finish_measurement_move
+        )
         self.canvas.cursor_position.connect(self.show_cursor_position)
         self.canvas.hint.connect(self.statusBar().showMessage)
 
@@ -995,7 +1155,8 @@ class MainWindow(QMainWindow):
 
         edit_help = QLabel(
             "Recliquer sur l’outil actif pour le désactiver, puis "
-            "cliquer-glisser un point pour corriger la mesure."
+            "cliquer-glisser un point pour le corriger ou une ligne "
+            "pour déplacer toute la mesure."
         )
         edit_help.setWordWrap(True)
         edit_help.setStyleSheet("color: #7f8a94;")
@@ -1032,7 +1193,7 @@ class MainWindow(QMainWindow):
 
         help_label = QLabel(
             "Molette : zoom · glisser : déplacer · double-clic : ajuster "
-            "l’image · point : cliquer-glisser pour modifier · "
+            "l’image · point/mesure : cliquer-glisser pour modifier · "
             "clic droit/Échap : annuler l’outil."
         )
         help_label.setWordWrap(True)
@@ -1348,6 +1509,26 @@ class MainWindow(QMainWindow):
         self.select_measurement(number)
 
     def finish_measurement_point_move(self, number: int, _point_index: int) -> None:
+        self._show_adjusted_measurement(number)
+
+    def move_measurement(self, number: int, raw_points: object) -> None:
+        measurement = next(
+            (item for item in self.measurements if item.number == number),
+            None,
+        )
+        if measurement is None:
+            return
+        measurement.points = [
+            (float(x), float(y))
+            for x, y in raw_points
+        ]
+        self.refresh_measurements()
+        self.select_measurement(number)
+
+    def finish_measurement_move(self, number: int) -> None:
+        self._show_adjusted_measurement(number)
+
+    def _show_adjusted_measurement(self, number: int) -> None:
         measurement = next(
             (item for item in self.measurements if item.number == number),
             None,
