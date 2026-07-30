@@ -33,6 +33,7 @@ from PySide6.QtGui import (
     QCloseEvent,
     QColor,
     QImage,
+    QIcon,
     QKeySequence,
     QPainter,
     QPen,
@@ -58,6 +59,7 @@ from PySide6.QtWidgets import (
     QGraphicsView,
     QGridLayout,
     QGroupBox,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -110,6 +112,18 @@ TOOL_NAMES = {
     "circle": "Cercle",
 }
 
+MEASUREMENT_COLOR_CHOICES = [
+    ("Par défaut", ""),
+    ("Cyan", "#20d6e8"),
+    ("Orange", "#ff9f43"),
+    ("Vert", "#3ee68b"),
+    ("Jaune", "#ffd54f"),
+    ("Rouge", "#ef5350"),
+    ("Bleu", "#42a5f5"),
+    ("Magenta", "#e56bff"),
+    ("Blanc", "#ffffff"),
+]
+
 
 @dataclass(slots=True)
 class Measurement:
@@ -117,11 +131,25 @@ class Measurement:
     kind: str
     points: list[Point]
     name: str = ""
+    color: str = ""
     created_at: str = field(
         default_factory=lambda: (
             datetime.now().astimezone().isoformat(timespec="seconds")
         )
     )
+
+
+def measurement_color(measurement: Measurement) -> QColor:
+    custom = QColor(measurement.color)
+    if measurement.color and custom.isValid():
+        return custom
+    return TOOL_COLORS[measurement.kind]
+
+
+def color_icon(color: QColor) -> QIcon:
+    pixmap = QPixmap(16, 16)
+    pixmap.fill(color)
+    return QIcon(pixmap)
 
 
 class CalibrationStore:
@@ -554,7 +582,7 @@ class ImageCanvas(QGraphicsView):
         self.clear_overlays()
         for measurement in measurements:
             points = measurement.points
-            color = TOOL_COLORS[measurement.kind]
+            color = measurement_color(measurement)
             self._editable_measurements.append(
                 (measurement.number, measurement.kind, tuple(points))
             )
@@ -879,8 +907,8 @@ def measurement_label(
     return f"{identifier}: {format_number(value)} {unit}"
 
 
-def cv_color(kind: str) -> tuple[int, int, int]:
-    color = TOOL_COLORS[kind]
+def cv_color(measurement: Measurement) -> tuple[int, int, int]:
+    color = measurement_color(measurement)
     return color.blue(), color.green(), color.red()
 
 
@@ -1010,7 +1038,7 @@ def annotate_frame(
     for measurement in measurements:
         points = measurement.points
         integer_points = [(round(point[0]), round(point[1])) for point in points]
-        color = cv_color(measurement.kind)
+        color = cv_color(measurement)
         for point in integer_points:
             cv2.circle(
                 image,
@@ -1342,9 +1370,9 @@ class MainWindow(QMainWindow):
     def _build_results_group(self) -> QGroupBox:
         group = QGroupBox("Résultats")
         layout = QVBoxLayout(group)
-        self.results_table = QTableWidget(0, 4)
+        self.results_table = QTableWidget(0, 5)
         self.results_table.setHorizontalHeaderLabels(
-            ["N°", "Nom", "Type", "Valeur"]
+            ["N°", "Nom", "Type", "Valeur", "Couleur"]
         )
         self.results_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
@@ -1358,7 +1386,12 @@ class MainWindow(QMainWindow):
         )
         self.results_table.itemChanged.connect(self.on_measurement_name_changed)
         self.results_table.verticalHeader().setVisible(False)
-        self.results_table.horizontalHeader().setStretchLastSection(True)
+        header = self.results_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.results_table.setMinimumHeight(170)
         layout.addWidget(self.results_table)
 
@@ -1663,6 +1696,10 @@ class MainWindow(QMainWindow):
     def refresh_measurements(self) -> None:
         if not hasattr(self, "results_table"):
             return
+        self._render_measurement_overlays()
+        self._update_measurement_table()
+
+    def _render_measurement_overlays(self) -> None:
         unit = self.display_unit.currentText()
         self.canvas.render_measurements(
             self.measurements,
@@ -1670,7 +1707,6 @@ class MainWindow(QMainWindow):
             unit,
             self.selected_scale_bar(),
         )
-        self._update_measurement_table()
 
     def selected_scale_bar(self) -> ScaleBar | None:
         if not self.scale_bar_check.isChecked():
@@ -1786,6 +1822,26 @@ class MainWindow(QMainWindow):
                 self.results_table.setItem(row, 1, name_item)
                 self.results_table.setItem(row, 2, type_item)
                 self.results_table.setItem(row, 3, value_item)
+                color_combo = QComboBox()
+                for label, color_value in MEASUREMENT_COLOR_CHOICES:
+                    color = (
+                        measurement_color(measurement)
+                        if not color_value
+                        else QColor(color_value)
+                    )
+                    color_combo.addItem(
+                        color_icon(color),
+                        label,
+                        color_value,
+                    )
+                selected_color = color_combo.findData(measurement.color)
+                color_combo.setCurrentIndex(max(0, selected_color))
+                color_combo.currentIndexChanged.connect(
+                    lambda _index,
+                    number=measurement.number,
+                    combo=color_combo: self.on_measurement_color_changed(number, combo)
+                )
+                self.results_table.setCellWidget(row, 4, color_combo)
         finally:
             self.results_table.blockSignals(False)
         self.results_table.resizeColumnToContents(0)
@@ -1807,6 +1863,22 @@ class MainWindow(QMainWindow):
         self.select_measurement(measurement.number)
         self.statusBar().showMessage(
             f"Nom de la mesure {measurement.number} mis à jour."
+        )
+
+    def on_measurement_color_changed(
+        self, number: int, combo: QComboBox
+    ) -> None:
+        measurement = next(
+            (item for item in self.measurements if item.number == number),
+            None,
+        )
+        if measurement is None:
+            return
+        measurement.color = str(combo.currentData() or "")
+        self._render_measurement_overlays()
+        self.select_measurement(number)
+        self.statusBar().showMessage(
+            f"Couleur de la mesure {number} mise à jour."
         )
 
     def _update_scale_label(self) -> None:
@@ -1966,6 +2038,7 @@ class MainWindow(QMainWindow):
                     [
                         "numero",
                         "nom",
+                        "couleur",
                         "type",
                         "valeur",
                         "unite",
@@ -1989,6 +2062,7 @@ class MainWindow(QMainWindow):
                         [
                             measurement.number,
                             measurement.name,
+                            measurement_color(measurement).name(),
                             TOOL_NAMES[measurement.kind],
                             f"{value:.10g}",
                             value_unit,

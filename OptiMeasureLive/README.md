@@ -104,6 +104,10 @@ identifier une mesure. Par exemple, le nom `toto` produit l’annotation
 `L1 toto: 12.34 mm`. Si le nom est vide, l’annotation reste `L1: 12.34 mm`.
 Le nom est également inclus dans l’export CSV.
 
+La colonne **Couleur** propose une liste pour personnaliser chaque mesure.
+Le changement s’applique immédiatement à l’image, aux captures et à l’export
+CSV. Le choix **Par défaut** rétablit la couleur associée au type de mesure.
+
 La case **Échelle** ajoute une barre d’échelle en bas à droite. Saisir sa
 longueur et choisir `mm` ou `µm`. Un profil d’étalonnage actif est nécessaire.
 La barre est incluse dans la capture annotée.
