@@ -88,7 +88,12 @@ résolution ou binning.
 - **Cercle** : cliquer trois points répartis sur la circonférence. La valeur
   affichée est le diamètre.
 
-L’outil sélectionné reste actif afin d’enchaîner plusieurs mesures.
+L’outil sélectionné reste actif afin d’enchaîner plusieurs mesures. Cliquer une
+seconde fois sur son bouton pour le désactiver.
+
+Pour corriger une mesure existante, désactiver d’abord l’outil de mesure puis
+cliquer-glisser l’un de ses points. La forme, la valeur affichée dans l’image et
+le tableau des résultats sont recalculés pendant le déplacement.
 
 ### Commandes
 
@@ -96,6 +101,7 @@ L’outil sélectionné reste actif afin d’enchaîner plusieurs mesures.
 |---|---|
 | Zoom | Molette |
 | Déplacer l’image | Glisser lorsque aucun outil n’est actif |
+| Modifier un point de mesure | Désactiver l’outil, puis cliquer-glisser le point |
 | Ajuster toute l’image | Double-clic ou touche `F` |
 | Annuler le pointage en cours | Clic droit ou `Échap` |
 | Annuler la dernière mesure | `Ctrl+Z` |
