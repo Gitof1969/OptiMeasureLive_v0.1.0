@@ -18,6 +18,8 @@ La version 0.2.0 comprend :
   points ;
 - modification d’un point et déplacement complet d’une mesure ;
 - noms et couleurs personnalisables dans le tableau des résultats ;
+- nom d’image avec couleurs de texte et de fond, visible dans l’aperçu, incrusté
+  dans la capture et repris dans son fichier ;
 - barre d’échelle paramétrable ajoutée aux captures ;
 - réticule visible à l’écran mais exclu des images enregistrées ;
 - sections repliables et sélection rapide des profils par objectif ;
@@ -83,6 +85,13 @@ Choisir :
 Cliquer sur **Démarrer**. Si l’image n’apparaît pas, essayer l’interface
 **Media Foundation** ou **Automatique**.
 
+Sous les boutons de caméra, cocher **Nom**, saisir le nom de l’image puis choisir
+la couleur du texte et celle du fond. Le premier choix du fond, représenté par
+une croix, permet de conserver un texte sans fond. Le résultat apparaît en haut
+à gauche de l’aperçu et est incrusté au même endroit dans la capture. Ce nom
+devient aussi le préfixe du fichier enregistré. Un horodatage lui est ajouté
+afin que deux captures successives ne s’écrasent pas.
+
 ### 2. Étalonner
 
 1. Placer une lame micrométrique, une règle ou une cale connue dans le plan de
@@ -134,8 +143,10 @@ la virgule. Le nom et cette valeur formatée sont également inclus dans l’exp
 CSV.
 
 La colonne **Couleur** propose une liste pour personnaliser chaque mesure.
-Le changement s’applique immédiatement à l’image, aux captures et à l’export
-CSV. Le choix **Par défaut** rétablit la couleur associée au type de mesure.
+La palette comprend notamment le noir et s’applique aussi au texte du nom
+d’image. Le changement s’applique immédiatement à l’image, aux captures et à
+l’export CSV. Le choix **Par défaut** rétablit la couleur associée au type de
+mesure.
 
 La case **Échelle** ajoute une barre d’échelle en bas à droite. Saisir sa
 longueur et choisir `mm` ou `µm`. Un profil d’étalonnage actif est nécessaire.
@@ -164,7 +175,8 @@ corrections, mais sont retirés des images enregistrées.
 | Capturer | `Ctrl+S` |
 
 Les captures sont enregistrées par défaut dans
-`Images\OptiMeasureLive`. Le dossier est modifiable par le menu **Fichier**.
+`Images\OptiMeasureLive`. Le dossier est modifiable par le menu **Fichier**. Si
+le nom d’image n’est pas activé ou reste vide, le préfixe `mesure` est utilisé.
 
 ## Vérification des calculs
 

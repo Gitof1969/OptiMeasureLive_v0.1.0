@@ -54,6 +54,7 @@ from PySide6.QtWidgets import (
     QGraphicsItem,
     QGraphicsLineItem,
     QGraphicsPixmapItem,
+    QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsSimpleTextItem,
     QGraphicsView,
@@ -62,6 +63,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLayout,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -120,6 +122,21 @@ TOOL_NAMES = {
 
 MEASUREMENT_COLOR_CHOICES = [
     ("Par défaut", ""),
+    ("Noir", "#101010"),
+    ("Cyan", "#20d6e8"),
+    ("Orange", "#ff9f43"),
+    ("Vert", "#3ee68b"),
+    ("Jaune", "#ffd54f"),
+    ("Rouge", "#ef5350"),
+    ("Bleu", "#42a5f5"),
+    ("Magenta", "#e56bff"),
+    ("Blanc", "#ffffff"),
+]
+
+IMAGE_BACKGROUND_COLOR_CHOICES = [
+    ("Sans fond", ""),
+    ("Noir", "#101010"),
+    ("Gris", "#607d8b"),
     ("Cyan", "#20d6e8"),
     ("Orange", "#ff9f43"),
     ("Vert", "#3ee68b"),
@@ -184,6 +201,38 @@ def color_icon(color: QColor) -> QIcon:
     pixmap = QPixmap(16, 16)
     pixmap.fill(color)
     return QIcon(pixmap)
+
+
+def no_color_icon() -> QIcon:
+    pixmap = QPixmap(16, 16)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(QPen(QColor("#9aa4ad"), 1.0))
+    painter.drawRect(1, 1, 13, 13)
+    painter.setPen(QPen(QColor("#ef5350"), 2.0))
+    painter.drawLine(3, 3, 13, 13)
+    painter.drawLine(13, 3, 3, 13)
+    painter.end()
+    return QIcon(pixmap)
+
+
+def safe_capture_filename_stem(name: str) -> str:
+    """Return a Windows-compatible file stem derived from an image name."""
+
+    invalid = '<>:"/\\|?*'
+    cleaned = "".join(
+        "_" if character in invalid or ord(character) < 32 else character
+        for character in name.strip()
+    ).strip(" .")
+    if not cleaned:
+        return ""
+    reserved = {"CON", "PRN", "AUX", "NUL"}
+    reserved.update(f"COM{number}" for number in range(1, 10))
+    reserved.update(f"LPT{number}" for number in range(1, 10))
+    if cleaned.upper() in reserved:
+        cleaned = f"_{cleaned}"
+    return cleaned[:80].rstrip(" .")
 
 
 class CalibrationStore:
@@ -734,12 +783,59 @@ class ImageCanvas(QGraphicsView):
         label_width_scene = item.boundingRect().width() / view_scale
         item.setPos(center_x - label_width_scene / 2, position_y)
 
+    def _render_image_name(
+        self,
+        name: str,
+        text_color_value: str,
+        background_color_value: str,
+    ) -> None:
+        if not self._image_size or not name.strip():
+            return
+
+        text_color = QColor(text_color_value)
+        if not text_color.isValid():
+            text_color = QColor("#ffffff")
+        width, height = self._image_size
+        margin = max(12.0, min(width, height) * 0.025)
+        text_item = self._add_text(
+            (margin, margin),
+            name.strip(),
+            text_color,
+            self._overlay_items,
+        )
+        background_color = QColor(background_color_value)
+        if not background_color_value or not background_color.isValid():
+            return
+
+        padding_x = 6.0
+        padding_y = 4.0
+        text_bounds = text_item.boundingRect()
+        background_item = QGraphicsRectItem(
+            text_bounds.left() - padding_x,
+            text_bounds.top() - padding_y,
+            text_bounds.width() + padding_x * 2,
+            text_bounds.height() + padding_y * 2,
+        )
+        background_item.setBrush(QBrush(background_color))
+        background_item.setPen(QPen(Qt.PenStyle.NoPen))
+        background_item.setPos(margin, margin)
+        background_item.setFlag(
+            QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations,
+            True,
+        )
+        background_item.setZValue(29)
+        self.scene().addItem(background_item)
+        self._overlay_items.append(background_item)
+
     def render_measurements(
         self,
         measurements: list[Measurement],
         mm_per_pixel: float | None,
         display_unit: str,
         scale_bar: ScaleBar | None = None,
+        image_name: str = "",
+        image_name_color: str = "#ffffff",
+        image_name_background: str = "",
     ) -> None:
         self.clear_overlays()
         for measurement in measurements:
@@ -805,6 +901,11 @@ class ImageCanvas(QGraphicsView):
             )
             self._editable_labels.append((measurement.number, label_item))
         self._render_scale_bar(mm_per_pixel, scale_bar)
+        self._render_image_name(
+            image_name,
+            image_name_color,
+            image_name_background,
+        )
 
     def mousePressEvent(self, event) -> None:
         if (
@@ -1203,6 +1304,66 @@ def put_cv_label(
     )
 
 
+def draw_cv_image_name(
+    image: np.ndarray,
+    name: str,
+    color_value: str,
+    background_color_value: str = "",
+) -> None:
+    text = (
+        unicodedata.normalize("NFKD", name.strip())
+        .encode("ascii", "ignore")
+        .decode("ascii")
+    )
+    if not text:
+        return
+
+    color = QColor(color_value)
+    if not color.isValid():
+        color = QColor("#ffffff")
+    bgr_color = (color.blue(), color.green(), color.red())
+    height, width = image.shape[:2]
+    margin = max(12, round(min(width, height) * 0.025))
+    scale = max(0.65, min(1.6, width / 1400.0))
+    thickness = max(1, round(scale))
+    text_size, baseline = cv2.getTextSize(
+        text,
+        cv2.FONT_HERSHEY_SIMPLEX,
+        scale,
+        thickness,
+    )
+    text_x = margin
+    text_y = margin + text_size[1]
+    background_color = QColor(background_color_value)
+    if background_color_value and background_color.isValid():
+        padding = max(4, round(scale * 6))
+        text_x += padding
+        text_y += padding
+        cv2.rectangle(
+            image,
+            (margin, margin),
+            (
+                margin + text_size[0] + padding * 2,
+                margin + text_size[1] + baseline + padding * 2,
+            ),
+            (
+                background_color.blue(),
+                background_color.green(),
+                background_color.red(),
+            ),
+            -1,
+            cv2.LINE_AA,
+        )
+    put_cv_label(
+        image,
+        (text_x, text_y),
+        text,
+        bgr_color,
+        scale,
+        thickness,
+    )
+
+
 def draw_cv_scale_bar(
     image: np.ndarray,
     mm_per_pixel: float | None,
@@ -1329,6 +1490,9 @@ def annotate_frame(
     display_unit: str,
     crosshair: bool,
     scale_bar: ScaleBar | None = None,
+    image_name: str = "",
+    image_name_color: str = "#ffffff",
+    image_name_background: str = "",
 ) -> np.ndarray:
     image = frame.copy()
     height, width = image.shape[:2]
@@ -1434,6 +1598,12 @@ def annotate_frame(
         )
 
     draw_cv_scale_bar(image, mm_per_pixel, scale_bar)
+    draw_cv_image_name(
+        image,
+        image_name,
+        image_name_color,
+        image_name_background,
+    )
     return image
 
 
@@ -1594,13 +1764,62 @@ class MainWindow(QMainWindow):
         button_row.addWidget(self.capture_button)
         grid.addLayout(button_row, 4, 0, 1, 2)
 
+        image_name_row = QHBoxLayout()
+        self.image_name_check = QCheckBox("Nom")
+        self.image_name_check.setToolTip(
+            "Incruster le nom en haut à gauche de la capture"
+        )
+        self.image_name_edit = QLineEdit()
+        self.image_name_edit.setPlaceholderText("Nom de l’image")
+        self.image_name_color = QComboBox()
+        self.image_name_color.setToolTip("Couleur du texte")
+        for label, color_value in MEASUREMENT_COLOR_CHOICES:
+            color = QColor(color_value or "#ffffff")
+            self.image_name_color.addItem(
+                color_icon(color),
+                label,
+                color_value,
+            )
+        self.image_name_background = QComboBox()
+        self.image_name_background.setToolTip("Couleur de fond du nom")
+        for label, color_value in IMAGE_BACKGROUND_COLOR_CHOICES:
+            icon = (
+                no_color_icon()
+                if not color_value
+                else color_icon(QColor(color_value))
+            )
+            self.image_name_background.addItem(icon, label, color_value)
+        self.image_name_check.toggled.connect(self.image_name_edit.setEnabled)
+        self.image_name_check.toggled.connect(self.image_name_color.setEnabled)
+        self.image_name_check.toggled.connect(
+            self.image_name_background.setEnabled
+        )
+        self.image_name_check.toggled.connect(self.on_image_name_changed)
+        self.image_name_edit.textChanged.connect(self.on_image_name_changed)
+        self.image_name_color.currentIndexChanged.connect(
+            self.on_image_name_changed
+        )
+        self.image_name_background.currentIndexChanged.connect(
+            self.on_image_name_changed
+        )
+        self.image_name_edit.setEnabled(False)
+        self.image_name_color.setEnabled(False)
+        self.image_name_background.setEnabled(False)
+        image_name_row.addWidget(self.image_name_check)
+        image_name_row.addWidget(self.image_name_edit, 1)
+        image_name_row.addWidget(self.image_name_color)
+        grid.addLayout(image_name_row, 5, 0, 1, 2)
+
+        grid.addWidget(QLabel("Fond du nom"), 6, 0)
+        grid.addWidget(self.image_name_background, 6, 1)
+
         self.keep_raw_check = QCheckBox("Conserver aussi l’image brute")
         self.keep_raw_check.setChecked(True)
-        grid.addWidget(self.keep_raw_check, 5, 0, 1, 2)
+        grid.addWidget(self.keep_raw_check, 7, 0, 1, 2)
 
         self.camera_status = QLabel("Arrêtée")
         self.camera_status.setStyleSheet("color: #9aa4ad;")
-        grid.addWidget(self.camera_status, 6, 0, 1, 2)
+        grid.addWidget(self.camera_status, 8, 0, 1, 2)
         return group
 
     def _build_objective_group(self) -> CollapsibleSection:
@@ -1852,6 +2071,28 @@ class MainWindow(QMainWindow):
         self.keep_raw_check.setChecked(
             self.settings.value("capture/keep_raw", True, type=bool)
         )
+        self.image_name_edit.setText(
+            str(self.settings.value("capture/image_name", ""))
+        )
+        image_name_color = str(
+            self.settings.value("capture/image_name_color", "")
+        )
+        image_name_color_index = self.image_name_color.findData(image_name_color)
+        self.image_name_color.setCurrentIndex(max(0, image_name_color_index))
+        image_name_background = str(
+            self.settings.value("capture/image_name_background", "")
+        )
+        image_name_background_index = self.image_name_background.findData(
+            image_name_background
+        )
+        self.image_name_background.setCurrentIndex(
+            max(0, image_name_background_index)
+        )
+        self.image_name_check.setChecked(
+            self.settings.value(
+                "capture/image_name_enabled", False, type=bool
+            )
+        )
         self.display_unit.setCurrentText(
             str(self.settings.value("measurement/unit", "mm"))
         )
@@ -1889,6 +2130,19 @@ class MainWindow(QMainWindow):
         )
         self.settings.setValue("camera/fps", self.fps_spin.value())
         self.settings.setValue("capture/keep_raw", self.keep_raw_check.isChecked())
+        self.settings.setValue(
+            "capture/image_name_enabled", self.image_name_check.isChecked()
+        )
+        self.settings.setValue(
+            "capture/image_name", self.image_name_edit.text().strip()
+        )
+        self.settings.setValue(
+            "capture/image_name_color", self.image_name_color.currentData() or ""
+        )
+        self.settings.setValue(
+            "capture/image_name_background",
+            self.image_name_background.currentData() or "",
+        )
         self.settings.setValue("measurement/unit", self.display_unit.currentText())
         self.settings.setValue(
             "measurement/scale_bar_enabled", self.scale_bar_check.isChecked()
@@ -2147,12 +2401,23 @@ class MainWindow(QMainWindow):
 
     def _render_measurement_overlays(self) -> None:
         unit = self.display_unit.currentText()
+        image_name = (
+            self.image_name_edit.text().strip()
+            if self.image_name_check.isChecked()
+            else ""
+        )
         self.canvas.render_measurements(
             self.measurements,
             self.mm_per_pixel,
             unit,
             self.selected_scale_bar(),
+            image_name,
+            str(self.image_name_color.currentData() or "#ffffff"),
+            str(self.image_name_background.currentData() or ""),
         )
+
+    def on_image_name_changed(self, *_args) -> None:
+        self.refresh_measurements()
 
     def selected_scale_bar(self) -> ScaleBar | None:
         if not self.scale_bar_check.isChecked():
@@ -2456,7 +2721,13 @@ class MainWindow(QMainWindow):
         try:
             output.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-            base_name = f"mesure_{timestamp}"
+            image_name = (
+                self.image_name_edit.text().strip()
+                if self.image_name_check.isChecked()
+                else ""
+            )
+            filename_stem = safe_capture_filename_stem(image_name) or "mesure"
+            base_name = f"{filename_stem}_{timestamp}"
             annotated = annotate_frame(
                 self.last_frame,
                 self.measurements,
@@ -2464,6 +2735,9 @@ class MainWindow(QMainWindow):
                 self.display_unit.currentText(),
                 False,
                 self.selected_scale_bar(),
+                image_name,
+                str(self.image_name_color.currentData() or "#ffffff"),
+                str(self.image_name_background.currentData() or ""),
             )
             annotated_path = output / f"{base_name}.png"
             if not write_png(annotated_path, annotated):
