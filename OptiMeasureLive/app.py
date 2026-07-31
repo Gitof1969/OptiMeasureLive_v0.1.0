@@ -84,6 +84,7 @@ from geometry import (
     calibration_from_reference,
     circle_from_three_points,
     distance_px,
+    parallel_lines_from_three_points,
     points_to_text,
 )
 
@@ -98,6 +99,7 @@ TOOL_POINT_COUNTS = {
     "distance": 2,
     "angle": 3,
     "circle": 3,
+    "parallel": 3,
 }
 
 TOOL_COLORS = {
@@ -105,6 +107,7 @@ TOOL_COLORS = {
     "distance": QColor("#20d6e8"),
     "angle": QColor("#ff9f43"),
     "circle": QColor("#3ee68b"),
+    "parallel": QColor("#e56bff"),
 }
 
 TOOL_NAMES = {
@@ -112,6 +115,7 @@ TOOL_NAMES = {
     "distance": "Distance",
     "angle": "Angle",
     "circle": "Cercle",
+    "parallel": "Distance entre parallèles",
 }
 
 MEASUREMENT_COLOR_CHOICES = [
@@ -158,6 +162,12 @@ def measurement_label_anchor(measurement: Measurement) -> Point:
         )
     if measurement.kind == "angle":
         return points[1][0] + 8, points[1][1] + 8
+    if measurement.kind == "parallel":
+        connector = parallel_lines_from_three_points(*points).connector
+        return (
+            (connector[0][0] + connector[1][0]) / 2 + 8,
+            (connector[0][1] + connector[1][1]) / 2 + 8,
+        )
     circle = circle_from_three_points(*points)
     return circle.center[0] + 8, circle.center[1] + 8
 
@@ -545,6 +555,29 @@ class ImageCanvas(QGraphicsView):
                     self._distance_to_segment(cursor, converted[1], converted[0]),
                     self._distance_to_segment(cursor, converted[1], converted[2]),
                 ]
+            elif kind == "parallel":
+                try:
+                    lines = parallel_lines_from_three_points(*points)
+                except GeometryError:
+                    continue
+                view_segments: list[tuple[Point, Point]] = []
+                for first, second in (
+                    lines.first,
+                    lines.second,
+                    lines.connector,
+                ):
+                    first_view = self.mapFromScene(QPointF(*first))
+                    second_view = self.mapFromScene(QPointF(*second))
+                    view_segments.append(
+                        (
+                            (float(first_view.x()), float(first_view.y())),
+                            (float(second_view.x()), float(second_view.y())),
+                        )
+                    )
+                distances = [
+                    self._distance_to_segment(cursor, first, second)
+                    for first, second in view_segments
+                ]
             else:
                 try:
                     circle = circle_from_three_points(*points)
@@ -732,6 +765,20 @@ class ImageCanvas(QGraphicsView):
             elif measurement.kind == "angle":
                 self._add_line(points[1], points[0], color, self._overlay_items)
                 self._add_line(points[1], points[2], color, self._overlay_items)
+            elif measurement.kind == "parallel":
+                try:
+                    lines = parallel_lines_from_three_points(*points)
+                except GeometryError:
+                    continue
+                self._add_line(*lines.first, color, self._overlay_items)
+                self._add_line(*lines.second, color, self._overlay_items)
+                self._add_line(
+                    *lines.connector,
+                    color,
+                    self._overlay_items,
+                    width=1.5,
+                    style=Qt.PenStyle.DashLine,
+                )
             elif measurement.kind == "circle":
                 try:
                     circle = circle_from_three_points(*points)
@@ -786,14 +833,40 @@ class ImageCanvas(QGraphicsView):
             color = TOOL_COLORS[self._active_tool]
             self._add_point_marker(point, color, self._temporary_items, z_value=40)
             if len(self._pending_points) > 1:
-                self._add_line(
-                    self._pending_points[-2],
-                    self._pending_points[-1],
-                    color,
-                    self._temporary_items,
-                    width=1.5,
-                    style=Qt.PenStyle.DashLine,
-                )
+                if (
+                    self._active_tool == "parallel"
+                    and len(self._pending_points) == 3
+                ):
+                    try:
+                        lines = parallel_lines_from_three_points(
+                            *self._pending_points
+                        )
+                    except GeometryError:
+                        pass
+                    else:
+                        self._add_line(
+                            *lines.second,
+                            color,
+                            self._temporary_items,
+                            width=1.5,
+                            style=Qt.PenStyle.DashLine,
+                        )
+                        self._add_line(
+                            *lines.connector,
+                            color,
+                            self._temporary_items,
+                            width=1.5,
+                            style=Qt.PenStyle.DashLine,
+                        )
+                else:
+                    self._add_line(
+                        self._pending_points[-2],
+                        self._pending_points[-1],
+                        color,
+                        self._temporary_items,
+                        width=1.5,
+                        style=Qt.PenStyle.DashLine,
+                    )
 
             expected = TOOL_POINT_COUNTS[self._active_tool]
             if len(self._pending_points) == expected:
@@ -1057,6 +1130,10 @@ def measurement_value(
 
     if measurement.kind == "circle":
         pixels = circle_from_three_points(*measurement.points).radius_px * 2
+    elif measurement.kind == "parallel":
+        pixels = parallel_lines_from_three_points(
+            *measurement.points
+        ).distance_px
     else:
         pixels = distance_px(*measurement.points[:2])
 
@@ -1078,6 +1155,7 @@ def measurement_label(
         "distance": "L",
         "angle": "A",
         "circle": "D",
+        "parallel": "P",
         "calibration": "CAL",
     }[measurement.kind]
     name = measurement.name.strip()
@@ -1326,6 +1404,31 @@ def annotate_frame(
                 integer_points[2],
                 color,
                 thickness,
+                cv2.LINE_AA,
+            )
+        elif measurement.kind == "parallel":
+            lines = parallel_lines_from_three_points(*points)
+            for first, second in (lines.first, lines.second):
+                cv2.line(
+                    image,
+                    (round(first[0]), round(first[1])),
+                    (round(second[0]), round(second[1])),
+                    color,
+                    thickness,
+                    cv2.LINE_AA,
+                )
+            cv2.line(
+                image,
+                (
+                    round(lines.connector[0][0]),
+                    round(lines.connector[0][1]),
+                ),
+                (
+                    round(lines.connector[1][0]),
+                    round(lines.connector[1][1]),
+                ),
+                color,
+                max(1, thickness - 1),
                 cv2.LINE_AA,
             )
         else:
@@ -1592,6 +1695,7 @@ class MainWindow(QMainWindow):
                 ("distance", "Distance · 2 points"),
                 ("angle", "Angle · 3 points"),
                 ("circle", "Cercle · 3 points"),
+                ("parallel", "Lignes parallèles · 3 points"),
             ]
         ):
             button = QPushButton(label)
@@ -1606,7 +1710,7 @@ class MainWindow(QMainWindow):
         self.crosshair_check = QCheckBox("Réticule central")
         self.crosshair_check.setChecked(True)
         self.crosshair_check.toggled.connect(self.canvas.set_crosshair_visible)
-        layout.addWidget(self.crosshair_check, 3, 0, 1, 2)
+        layout.addWidget(self.crosshair_check, 4, 0, 1, 2)
 
         scale_bar_row = QHBoxLayout()
         self.scale_bar_check = QCheckBox("Échelle")
@@ -1623,7 +1727,7 @@ class MainWindow(QMainWindow):
         scale_bar_row.addWidget(self.scale_bar_check)
         scale_bar_row.addWidget(self.scale_bar_length, 1)
         scale_bar_row.addWidget(self.scale_bar_unit)
-        layout.addLayout(scale_bar_row, 4, 0, 1, 2)
+        layout.addLayout(scale_bar_row, 5, 0, 1, 2)
 
         self.scale_bar_check.toggled.connect(self.on_scale_bar_changed)
         self.scale_bar_length.valueChanged.connect(self.on_scale_bar_changed)
@@ -1650,7 +1754,7 @@ class MainWindow(QMainWindow):
         magnifier_row.addWidget(magnifier_title)
         magnifier_row.addWidget(self.magnifier_zoom_combo)
         magnifier_row.addWidget(self.magnifier_coordinates, 1)
-        layout.addLayout(magnifier_row, 5, 0, 1, 2)
+        layout.addLayout(magnifier_row, 6, 0, 1, 2)
 
         self.magnifier_label = QLabel("Survoler l’image pour activer la loupe")
         self.magnifier_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1664,7 +1768,7 @@ class MainWindow(QMainWindow):
         self.magnifier_label.setStyleSheet(
             "QLabel { background-color: #101419; color: #7f8a94; }"
         )
-        layout.addWidget(self.magnifier_label, 6, 0, 1, 2)
+        layout.addWidget(self.magnifier_label, 7, 0, 1, 2)
 
         edit_help = QLabel(
             "Recliquer sur l’outil actif pour le désactiver, puis "
@@ -1673,14 +1777,14 @@ class MainWindow(QMainWindow):
         )
         edit_help.setWordWrap(True)
         edit_help.setStyleSheet("color: #7f8a94;")
-        layout.addWidget(edit_help, 7, 0, 1, 2)
+        layout.addWidget(edit_help, 8, 0, 1, 2)
 
         self.undo_button = QPushButton("Annuler dernière")
         self.undo_button.clicked.connect(self.undo_measurement)
         self.clear_button = QPushButton("Tout effacer")
         self.clear_button.clicked.connect(self.clear_measurements)
-        layout.addWidget(self.undo_button, 8, 0)
-        layout.addWidget(self.clear_button, 8, 1)
+        layout.addWidget(self.undo_button, 9, 0)
+        layout.addWidget(self.clear_button, 9, 1)
         return group
 
     def _build_results_group(self) -> CollapsibleSection:

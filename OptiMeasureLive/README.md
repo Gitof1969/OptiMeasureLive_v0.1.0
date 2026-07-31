@@ -14,6 +14,8 @@ La version 0.2.0 comprend :
 - mesure de distance par deux points ;
 - mesure d’angle par trois points (A-B-C, sommet en B) ;
 - diamètre d’un cercle passant par trois points ;
+- distance perpendiculaire entre deux lignes parallèles définies par trois
+  points ;
 - modification d’un point et déplacement complet d’une mesure ;
 - noms et couleurs personnalisables dans le tableau des résultats ;
 - barre d’échelle paramétrable ajoutée aux captures ;
@@ -100,6 +102,9 @@ résolution ou binning.
 - **Angle** : cliquer A, le sommet B, puis C.
 - **Cercle** : cliquer trois points répartis sur la circonférence. La valeur
   affichée est le diamètre.
+- **Lignes parallèles** : les deux premiers points définissent la ligne de
+  référence ; le troisième place la seconde parallèle. La valeur affichée est
+  leur distance perpendiculaire.
 
 L’outil sélectionné reste actif afin d’enchaîner plusieurs mesures. Cliquer une
 seconde fois sur son bouton pour le désactiver.

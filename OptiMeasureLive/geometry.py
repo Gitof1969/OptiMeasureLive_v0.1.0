@@ -53,6 +53,14 @@ class Circle:
     radius_px: float
 
 
+@dataclass(frozen=True, slots=True)
+class ParallelLines:
+    first: tuple[Point, Point]
+    second: tuple[Point, Point]
+    connector: tuple[Point, Point]
+    distance_px: float
+
+
 def circle_from_three_points(first: Point, second: Point, third: Point) -> Circle:
     """Return the circumcircle through three non-collinear image points."""
 
@@ -76,6 +84,66 @@ def circle_from_three_points(first: Point, second: Point, third: Point) -> Circl
 
     center = (center_x, center_y)
     return Circle(center=center, radius_px=distance_px(center, first))
+
+
+def parallel_lines_from_three_points(
+    first: Point,
+    second: Point,
+    third: Point,
+) -> ParallelLines:
+    """Build two parallel lines and their perpendicular separation.
+
+    ``first`` and ``second`` define the reference direction. The other line
+    passes through ``third``. Display segments are extended when necessary so
+    that all three construction points remain visible on their line.
+    """
+
+    delta_x = second[0] - first[0]
+    delta_y = second[1] - first[1]
+    length_squared = delta_x * delta_x + delta_y * delta_y
+    if length_squared <= 1e-12:
+        raise GeometryError(
+            "Les deux premiers points définissant les parallèles sont confondus."
+        )
+
+    projection_factor = (
+        (third[0] - first[0]) * delta_x
+        + (third[1] - first[1]) * delta_y
+    ) / length_squared
+    projection = (
+        first[0] + projection_factor * delta_x,
+        first[1] + projection_factor * delta_y,
+    )
+    offset = (
+        third[0] - projection[0],
+        third[1] - projection[1],
+    )
+
+    start_factor = min(0.0, projection_factor)
+    end_factor = max(1.0, projection_factor)
+    first_start = (
+        first[0] + start_factor * delta_x,
+        first[1] + start_factor * delta_y,
+    )
+    first_end = (
+        first[0] + end_factor * delta_x,
+        first[1] + end_factor * delta_y,
+    )
+    second_start = (
+        first_start[0] + offset[0],
+        first_start[1] + offset[1],
+    )
+    second_end = (
+        first_end[0] + offset[0],
+        first_end[1] + offset[1],
+    )
+
+    return ParallelLines(
+        first=(first_start, first_end),
+        second=(second_start, second_end),
+        connector=(projection, third),
+        distance_px=hypot(*offset),
+    )
 
 
 def calibration_from_reference(
