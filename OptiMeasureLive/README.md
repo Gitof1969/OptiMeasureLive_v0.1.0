@@ -112,6 +112,15 @@ Pour repositionner une mesure complète sans modifier sa valeur, cliquer-glisser
 directement sa ligne ou la circonférence de son cercle. Tous ses points se
 déplacent alors ensemble.
 
+L’étiquette d’une mesure peut également être déplacée par clic-glisser lorsque
+l’outil de mesure est désactivé. Elle reste horizontale, conserve la couleur de
+la mesure et continue à suivre celle-ci lors d’un déplacement complet.
+
+La **Loupe de pointage**, placée sous le réglage de la barre d’échelle, agrandit
+la zone située sous le curseur pendant la création ou la modification d’une
+mesure. Les grossissements disponibles vont de `200 %` à `1600 %`. Le réticule
+jaune de la loupe indique le pixel visé et n’est pas ajouté aux captures.
+
 Dans le tableau des résultats, double-cliquer sur la colonne **Nom** pour
 identifier une mesure. Par exemple, le nom `toto` produit l’annotation
 `L1 toto: 12.34 mm`. Si le nom est vide, l’annotation reste `L1: 12.34 mm`.
@@ -123,7 +132,8 @@ CSV. Le choix **Par défaut** rétablit la couleur associée au type de mesure.
 
 La case **Échelle** ajoute une barre d’échelle en bas à droite. Saisir sa
 longueur et choisir `mm` ou `µm`. Un profil d’étalonnage actif est nécessaire.
-La barre est incluse dans la capture annotée.
+La barre est incluse dans la capture annotée et son texte reste centré au-dessus
+d’elle, quel que soit le zoom d’affichage.
 
 Le réticule central reste une aide à l’écran et n’est jamais enregistré dans
 les captures.
@@ -136,6 +146,8 @@ les captures.
 | Déplacer l’image | Glisser lorsque aucun outil n’est actif |
 | Modifier un point de mesure | Désactiver l’outil, puis cliquer-glisser le point |
 | Déplacer toute une mesure | Cliquer-glisser sa ligne ou sa circonférence |
+| Déplacer une étiquette | Cliquer-glisser directement son texte |
+| Régler la loupe | Choisir un grossissement de 200 % à 1600 % |
 | Ajuster toute l’image | Double-clic ou touche `F` |
 | Annuler le pointage en cours | Clic droit ou `Échap` |
 | Annuler la dernière mesure | `Ctrl+Z` |

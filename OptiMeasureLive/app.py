@@ -134,6 +134,7 @@ class Measurement:
     points: list[Point]
     name: str = ""
     color: str = ""
+    label_offset: Point = (0.0, 0.0)
     created_at: str = field(
         default_factory=lambda: (
             datetime.now().astimezone().isoformat(timespec="seconds")
@@ -146,6 +147,27 @@ def measurement_color(measurement: Measurement) -> QColor:
     if measurement.color and custom.isValid():
         return custom
     return TOOL_COLORS[measurement.kind]
+
+
+def measurement_label_anchor(measurement: Measurement) -> Point:
+    points = measurement.points
+    if measurement.kind in {"distance", "calibration"}:
+        return (
+            (points[0][0] + points[1][0]) / 2 + 8,
+            (points[0][1] + points[1][1]) / 2 + 8,
+        )
+    if measurement.kind == "angle":
+        return points[1][0] + 8, points[1][1] + 8
+    circle = circle_from_three_points(*points)
+    return circle.center[0] + 8, circle.center[1] + 8
+
+
+def measurement_label_position(measurement: Measurement) -> Point:
+    anchor = measurement_label_anchor(measurement)
+    return (
+        anchor[0] + measurement.label_offset[0],
+        anchor[1] + measurement.label_offset[1],
+    )
 
 
 def color_icon(color: QColor) -> QIcon:
@@ -272,6 +294,8 @@ class ImageCanvas(QGraphicsView):
     point_move_finished = Signal(int, int)
     measurement_moved = Signal(int, object)
     measurement_move_finished = Signal(int)
+    label_moved = Signal(int, object)
+    label_move_finished = Signal(int)
     image_size_changed = Signal()
     cursor_position = Signal(float, float)
     hint = Signal(str)
@@ -292,11 +316,20 @@ class ImageCanvas(QGraphicsView):
             tuple[int, int, Point, QGraphicsEllipseItem, QColor]
         ] = []
         self._editable_measurements: list[tuple[int, str, tuple[Point, ...]]] = []
+        self._editable_labels: list[
+            tuple[int, QGraphicsSimpleTextItem]
+        ] = []
         self._selected_point: tuple[int, int] | None = None
         self._dragged_point: tuple[int, int] | None = None
         self._dragged_measurement: int | None = None
         self._measurement_drag_origin: Point | None = None
         self._measurement_drag_points: tuple[Point, ...] = ()
+        self._dragged_label: int | None = None
+        self._label_drag_origin: Point | None = None
+        self._label_drag_position: Point | None = None
+        self._scale_bar_label: (
+            tuple[QGraphicsSimpleTextItem, float, float] | None
+        ) = None
         self._crosshair_visible = True
         self._auto_fit = True
 
@@ -348,6 +381,7 @@ class ImageCanvas(QGraphicsView):
         if self.has_image:
             self.fitInView(self.pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
             self._auto_fit = True
+            self._center_scale_bar_label()
 
     def set_crosshair_visible(self, visible: bool) -> None:
         self._crosshair_visible = visible
@@ -359,6 +393,9 @@ class ImageCanvas(QGraphicsView):
         self._dragged_measurement = None
         self._measurement_drag_origin = None
         self._measurement_drag_points = ()
+        self._dragged_label = None
+        self._label_drag_origin = None
+        self._label_drag_position = None
         self._set_selected_point(None)
         self._active_tool = tool
         if tool:
@@ -382,6 +419,8 @@ class ImageCanvas(QGraphicsView):
         self._overlay_items.clear()
         self._editable_points.clear()
         self._editable_measurements.clear()
+        self._editable_labels.clear()
+        self._scale_bar_label = None
 
     def _remove_items(self, items: Iterable[QGraphicsItem]) -> None:
         for item in list(items):
@@ -523,6 +562,16 @@ class ImageCanvas(QGraphicsView):
 
         return closest_number
 
+    def _label_at_view_position(
+        self, position: QPointF
+    ) -> tuple[int, QGraphicsSimpleTextItem] | None:
+        items_at_position = self.items(position.toPoint())
+        for hit_item in items_at_position:
+            for number, label_item in self._editable_labels:
+                if hit_item is label_item or hit_item == label_item:
+                    return number, label_item
+        return None
+
     def _translated_measurement_points(self, current: QPointF) -> list[Point]:
         if (
             self._measurement_drag_origin is None
@@ -569,15 +618,19 @@ class ImageCanvas(QGraphicsView):
         text: str,
         color: QColor,
         collection: list[QGraphicsItem],
-    ) -> None:
+    ) -> QGraphicsSimpleTextItem:
         item = QGraphicsSimpleTextItem(text)
         item.setBrush(QBrush(color))
-        item.setPen(QPen(QColor("#101010"), 1.0))
+        # Use the measurement color for both the glyph fill and its fine edge.
+        # A black pen at this size can visually cover the colored glyph.
+        item.setPen(QPen(color, 0.5))
         item.setPos(*position)
+        item.setRotation(0.0)
         item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
         item.setZValue(30)
         self.scene().addItem(item)
         collection.append(item)
+        return item
 
     def _render_scale_bar(
         self,
@@ -622,12 +675,31 @@ class ImageCanvas(QGraphicsView):
                 width=line_width,
             )
 
-        self._add_text(
-            (start_x, bar_y - tick_height - 22),
+        label_y = bar_y - tick_height - 22
+        label_item = self._add_text(
+            ((start_x + end_x) / 2, label_y),
             scale_bar_label(scale_bar),
             foreground,
             self._overlay_items,
         )
+        self._scale_bar_label = (
+            label_item,
+            (start_x + end_x) / 2,
+            label_y,
+        )
+        self._center_scale_bar_label()
+
+    def _center_scale_bar_label(self) -> None:
+        if self._scale_bar_label is None:
+            return
+        item, center_x, position_y = self._scale_bar_label
+        if item.scene() is not self.scene():
+            return
+        view_scale = abs(self.transform().m11())
+        if view_scale <= 1e-12:
+            return
+        label_width_scene = item.boundingRect().width() / view_scale
+        item.setPos(center_x - label_width_scene / 2, position_y)
 
     def render_measurements(
         self,
@@ -657,21 +729,9 @@ class ImageCanvas(QGraphicsView):
 
             if measurement.kind in {"distance", "calibration"}:
                 self._add_line(points[0], points[1], color, self._overlay_items)
-                label = measurement_label(measurement, mm_per_pixel, display_unit)
-                midpoint = (
-                    (points[0][0] + points[1][0]) / 2 + 8,
-                    (points[0][1] + points[1][1]) / 2 + 8,
-                )
-                self._add_text(midpoint, label, color, self._overlay_items)
             elif measurement.kind == "angle":
                 self._add_line(points[1], points[0], color, self._overlay_items)
                 self._add_line(points[1], points[2], color, self._overlay_items)
-                self._add_text(
-                    (points[1][0] + 8, points[1][1] + 8),
-                    measurement_label(measurement, mm_per_pixel, display_unit),
-                    color,
-                    self._overlay_items,
-                )
             elif measurement.kind == "circle":
                 try:
                     circle = circle_from_three_points(*points)
@@ -690,12 +750,13 @@ class ImageCanvas(QGraphicsView):
                 self.scene().addItem(ellipse)
                 self._overlay_items.append(ellipse)
                 self._add_point_marker(circle.center, color, self._overlay_items)
-                self._add_text(
-                    (circle.center[0] + 8, circle.center[1] + 8),
-                    measurement_label(measurement, mm_per_pixel, display_unit),
-                    color,
-                    self._overlay_items,
-                )
+            label_item = self._add_text(
+                measurement_label_position(measurement),
+                measurement_label(measurement, mm_per_pixel, display_unit),
+                color,
+                self._overlay_items,
+            )
+            self._editable_labels.append((measurement.number, label_item))
         self._render_scale_bar(mm_per_pixel, scale_bar)
 
     def mousePressEvent(self, event) -> None:
@@ -707,6 +768,11 @@ class ImageCanvas(QGraphicsView):
             self.hint.emit("Mesure en cours annulée.")
             event.accept()
             return
+
+        if event.button() == Qt.MouseButton.LeftButton:
+            cursor_point = self.mapToScene(event.position().toPoint())
+            if self._inside_image(cursor_point):
+                self.cursor_position.emit(cursor_point.x(), cursor_point.y())
 
         if (
             event.button() == Qt.MouseButton.LeftButton
@@ -746,6 +812,7 @@ class ImageCanvas(QGraphicsView):
             if selected is not None:
                 self._dragged_point = selected
                 self._dragged_measurement = None
+                self._dragged_label = None
                 self._set_selected_point(selected)
                 self.setDragMode(QGraphicsView.DragMode.NoDrag)
                 self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
@@ -753,6 +820,31 @@ class ImageCanvas(QGraphicsView):
                 self.hint.emit(
                     "Point sélectionné : maintenir le clic et déplacer pour ajuster "
                     "la mesure."
+                )
+                event.accept()
+                return
+
+            selected_label = self._label_at_view_position(event.position())
+            if selected_label is not None:
+                number, label_item = selected_label
+                scene_position = self.mapToScene(event.position().toPoint())
+                self._dragged_label = number
+                self._label_drag_origin = (
+                    scene_position.x(),
+                    scene_position.y(),
+                )
+                self._label_drag_position = (
+                    label_item.pos().x(),
+                    label_item.pos().y(),
+                )
+                self._dragged_measurement = None
+                self._set_selected_point(None)
+                self.setDragMode(QGraphicsView.DragMode.NoDrag)
+                self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+                self.point_selected.emit(number)
+                self.hint.emit(
+                    "Étiquette sélectionnée : maintenir le clic et déplacer "
+                    "pour la repositionner."
                 )
                 event.accept()
                 return
@@ -803,6 +895,26 @@ class ImageCanvas(QGraphicsView):
             event.accept()
             return
 
+        if (
+            self._dragged_label is not None
+            and self._label_drag_origin is not None
+            and self._label_drag_position is not None
+        ):
+            label_position = QPointF(
+                self._label_drag_position[0]
+                + point.x()
+                - self._label_drag_origin[0],
+                self._label_drag_position[1]
+                + point.y()
+                - self._label_drag_origin[1],
+            )
+            self.label_moved.emit(
+                self._dragged_label,
+                self._clamp_to_image(label_position),
+            )
+            event.accept()
+            return
+
         if self._dragged_measurement is not None:
             translated_points = self._translated_measurement_points(point)
             if translated_points:
@@ -815,6 +927,8 @@ class ImageCanvas(QGraphicsView):
         if self._active_tool is None:
             if self._point_at_view_position(event.position()) is not None:
                 cursor = Qt.CursorShape.PointingHandCursor
+            elif self._label_at_view_position(event.position()) is not None:
+                cursor = Qt.CursorShape.SizeAllCursor
             elif self._measurement_at_view_position(event.position()) is not None:
                 cursor = Qt.CursorShape.SizeAllCursor
             else:
@@ -832,6 +946,20 @@ class ImageCanvas(QGraphicsView):
             self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
             self.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
             self.point_move_finished.emit(number, point_index)
+            event.accept()
+            return
+
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._dragged_label is not None
+        ):
+            number = self._dragged_label
+            self._dragged_label = None
+            self._label_drag_origin = None
+            self._label_drag_position = None
+            self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+            self.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
+            self.label_move_finished.emit(number)
             event.accept()
             return
 
@@ -858,6 +986,7 @@ class ImageCanvas(QGraphicsView):
         current = self.transform().m11()
         if (factor > 1 and current < 25) or (factor < 1 and current > 0.02):
             self.scale(factor, factor)
+            self._center_scale_bar_label()
 
     def mouseDoubleClickEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -980,14 +1109,15 @@ def put_cv_label(
     x, y = round(position[0]), round(position[1])
     x = max(4, min(image.shape[1] - 4, x))
     y = max(18, min(image.shape[0] - 4, y))
+    shadow_offset = max(1, thickness // 2)
     cv2.putText(
         image,
         text,
-        (x, y),
+        (x + shadow_offset, y + shadow_offset),
         cv2.FONT_HERSHEY_SIMPLEX,
         scale,
         (10, 10, 10),
-        thickness + 3,
+        thickness,
         cv2.LINE_AA,
     )
     cv2.putText(
@@ -1023,7 +1153,7 @@ def draw_cv_scale_bar(
     line_width = max(2, round(width / 800))
     shadow_width = line_width + max(3, round(width / 500))
     label_scale = max(0.55, min(1.5, width / 1400.0))
-    label_thickness = max(1, round(label_scale * 2))
+    label_thickness = max(1, round(label_scale))
 
     segments = [
         ((start_x, bar_y), (end_x, bar_y)),
@@ -1047,7 +1177,8 @@ def draw_cv_scale_bar(
         label_scale,
         label_thickness,
     )
-    label_x = max(4, end_x - label_size[0])
+    label_x = round((start_x + end_x - label_size[0]) / 2)
+    label_x = max(4, min(width - label_size[0] - 4, label_x))
     label_y = max(18, bar_y - tick_height - 8)
     put_cv_label(
         image,
@@ -1057,6 +1188,67 @@ def draw_cv_scale_bar(
         label_scale,
         label_thickness,
     )
+
+
+def magnified_region(
+    frame: np.ndarray,
+    center: Point,
+    zoom_factor: float,
+    output_size: tuple[int, int],
+) -> np.ndarray:
+    """Return a pixel-accurate magnified crop with a central aiming cross."""
+
+    output_width, output_height = output_size
+    output_width = max(32, output_width)
+    output_height = max(32, output_height)
+    zoom_factor = max(1.0, zoom_factor)
+    crop_width = max(3, round(output_width / zoom_factor))
+    crop_height = max(3, round(output_height / zoom_factor))
+    source = frame
+    if frame.ndim == 2:
+        source = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+
+    crop = cv2.getRectSubPix(
+        source,
+        (crop_width, crop_height),
+        (float(center[0]), float(center[1])),
+    )
+    magnified = cv2.resize(
+        crop,
+        (output_width, output_height),
+        interpolation=cv2.INTER_NEAREST,
+    )
+
+    center_x = output_width // 2
+    center_y = output_height // 2
+    arm = max(18, min(output_width, output_height) // 5)
+    cross_color = (0, 255, 255)
+    for thickness, color in [(3, (10, 10, 10)), (1, cross_color)]:
+        cv2.line(
+            magnified,
+            (center_x - arm, center_y),
+            (center_x + arm, center_y),
+            color,
+            thickness,
+            cv2.LINE_AA,
+        )
+        cv2.line(
+            magnified,
+            (center_x, center_y - arm),
+            (center_x, center_y + arm),
+            color,
+            thickness,
+            cv2.LINE_AA,
+        )
+    cv2.circle(
+        magnified,
+        (center_x, center_y),
+        3,
+        cross_color,
+        1,
+        cv2.LINE_AA,
+    )
+    return magnified
 
 
 def annotate_frame(
@@ -1071,6 +1263,7 @@ def annotate_frame(
     height, width = image.shape[:2]
     factor = max(0.65, min(2.0, width / 1600.0))
     thickness = max(1, round(factor * 2))
+    text_thickness = max(1, round(factor))
     marker_radius = max(3, round(factor * 4))
 
     if crosshair:
@@ -1118,10 +1311,6 @@ def annotate_frame(
                 thickness,
                 cv2.LINE_AA,
             )
-            position = (
-                (points[0][0] + points[1][0]) / 2 + 10,
-                (points[0][1] + points[1][1]) / 2 + 10,
-            )
         elif measurement.kind == "angle":
             cv2.line(
                 image,
@@ -1139,7 +1328,6 @@ def annotate_frame(
                 thickness,
                 cv2.LINE_AA,
             )
-            position = (points[1][0] + 10, points[1][1] + 10)
         else:
             circle: Circle = circle_from_three_points(*points)
             center = (
@@ -1149,9 +1337,16 @@ def annotate_frame(
             radius = round(circle.radius_px)
             cv2.circle(image, center, radius, color, thickness, cv2.LINE_AA)
             cv2.circle(image, center, marker_radius, color, thickness, cv2.LINE_AA)
-            position = (circle.center[0] + 10, circle.center[1] + 10)
 
-        put_cv_label(image, position, label, color, factor * 0.55, thickness)
+        position = measurement_label_position(measurement)
+        put_cv_label(
+            image,
+            position,
+            label,
+            color,
+            factor * 0.55,
+            text_thickness,
+        )
 
     draw_cv_scale_bar(image, mm_per_pixel, scale_bar)
     return image
@@ -1188,6 +1383,7 @@ class MainWindow(QMainWindow):
         self.measurements: list[Measurement] = []
         self.next_measurement_number = 1
         self.current_resolution: tuple[int, int] | None = None
+        self.magnifier_position: Point | None = None
 
         self.canvas = ImageCanvas()
         self.canvas.tool_completed.connect(self.on_tool_completed)
@@ -1197,6 +1393,10 @@ class MainWindow(QMainWindow):
         self.canvas.measurement_moved.connect(self.move_measurement)
         self.canvas.measurement_move_finished.connect(
             self.finish_measurement_move
+        )
+        self.canvas.label_moved.connect(self.move_measurement_label)
+        self.canvas.label_move_finished.connect(
+            self.finish_measurement_label_move
         )
         self.canvas.image_size_changed.connect(self.refresh_measurements)
         self.canvas.cursor_position.connect(self.show_cursor_position)
@@ -1431,6 +1631,41 @@ class MainWindow(QMainWindow):
         self.scale_bar_length.setEnabled(False)
         self.scale_bar_unit.setEnabled(False)
 
+        magnifier_row = QHBoxLayout()
+        magnifier_title = QLabel("Loupe de pointage")
+        self.magnifier_zoom_combo = QComboBox()
+        for percentage in [200, 400, 800, 1200, 1600]:
+            self.magnifier_zoom_combo.addItem(
+                f"{percentage} %",
+                percentage / 100.0,
+            )
+        self.magnifier_zoom_combo.setCurrentText("800 %")
+        self.magnifier_zoom_combo.currentIndexChanged.connect(
+            self.update_magnifier
+        )
+        self.magnifier_coordinates = QLabel("x=— · y=—")
+        self.magnifier_coordinates.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        magnifier_row.addWidget(magnifier_title)
+        magnifier_row.addWidget(self.magnifier_zoom_combo)
+        magnifier_row.addWidget(self.magnifier_coordinates, 1)
+        layout.addLayout(magnifier_row, 5, 0, 1, 2)
+
+        self.magnifier_label = QLabel("Survoler l’image pour activer la loupe")
+        self.magnifier_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.magnifier_label.setFrameShape(QFrame.Shape.StyledPanel)
+        self.magnifier_label.setMinimumSize(260, 150)
+        self.magnifier_label.setFixedHeight(170)
+        self.magnifier_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        self.magnifier_label.setStyleSheet(
+            "QLabel { background-color: #101419; color: #7f8a94; }"
+        )
+        layout.addWidget(self.magnifier_label, 6, 0, 1, 2)
+
         edit_help = QLabel(
             "Recliquer sur l’outil actif pour le désactiver, puis "
             "cliquer-glisser un point pour le corriger ou une ligne "
@@ -1438,14 +1673,14 @@ class MainWindow(QMainWindow):
         )
         edit_help.setWordWrap(True)
         edit_help.setStyleSheet("color: #7f8a94;")
-        layout.addWidget(edit_help, 5, 0, 1, 2)
+        layout.addWidget(edit_help, 7, 0, 1, 2)
 
         self.undo_button = QPushButton("Annuler dernière")
         self.undo_button.clicked.connect(self.undo_measurement)
         self.clear_button = QPushButton("Tout effacer")
         self.clear_button.clicked.connect(self.clear_measurements)
-        layout.addWidget(self.undo_button, 6, 0)
-        layout.addWidget(self.clear_button, 6, 1)
+        layout.addWidget(self.undo_button, 8, 0)
+        layout.addWidget(self.clear_button, 8, 1)
         return group
 
     def _build_results_group(self) -> CollapsibleSection:
@@ -1483,7 +1718,7 @@ class MainWindow(QMainWindow):
 
         help_label = QLabel(
             "Molette : zoom · glisser : déplacer · double-clic : ajuster "
-            "l’image · point/mesure : cliquer-glisser pour modifier · "
+            "l’image · point/mesure/étiquette : cliquer-glisser pour modifier · "
             "double-clic sur « Nom » : renommer · "
             "clic droit/Échap : annuler l’outil."
         )
@@ -1545,6 +1780,9 @@ class MainWindow(QMainWindow):
                 "measurement/scale_bar_enabled", False, type=bool
             )
         )
+        self.magnifier_zoom_combo.setCurrentText(
+            str(self.settings.value("measurement/magnifier_zoom", "800 %"))
+        )
         for key, section in self.sections.items():
             section.set_expanded(
                 self.settings.value(
@@ -1574,6 +1812,10 @@ class MainWindow(QMainWindow):
         )
         self.settings.setValue(
             "measurement/scale_bar_unit", self.scale_bar_unit.currentText()
+        )
+        self.settings.setValue(
+            "measurement/magnifier_zoom",
+            self.magnifier_zoom_combo.currentText(),
         )
         for key, section in self.sections.items():
             self.settings.setValue(
@@ -1705,6 +1947,7 @@ class MainWindow(QMainWindow):
         if not self.freeze_button.isChecked():
             self.last_frame = frame.copy()
             self.canvas.set_frame(frame)
+            self.update_magnifier()
 
     def on_freeze_changed(self, frozen: bool) -> None:
         self.freeze_button.setText("Reprendre" if frozen else "Figer")
@@ -1896,6 +2139,27 @@ class MainWindow(QMainWindow):
 
     def finish_measurement_move(self, number: int) -> None:
         self._show_adjusted_measurement(number)
+
+    def move_measurement_label(self, number: int, raw_position: object) -> None:
+        measurement = next(
+            (item for item in self.measurements if item.number == number),
+            None,
+        )
+        if measurement is None:
+            return
+        x, y = raw_position
+        anchor = measurement_label_anchor(measurement)
+        measurement.label_offset = (
+            float(x) - anchor[0],
+            float(y) - anchor[1],
+        )
+        self._render_measurement_overlays()
+        self.select_measurement(number)
+
+    def finish_measurement_label_move(self, number: int) -> None:
+        self.statusBar().showMessage(
+            f"Étiquette de la mesure {number} repositionnée."
+        )
 
     def _show_adjusted_measurement(self, number: int) -> None:
         measurement = next(
@@ -2201,7 +2465,44 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"CSV enregistré : {filename}")
 
     def show_cursor_position(self, x: float, y: float) -> None:
+        self.magnifier_position = (x, y)
+        self.magnifier_coordinates.setText(f"x={x:.2f} · y={y:.2f}")
+        self.update_magnifier()
         self.statusBar().showMessage(f"Position image : x={x:.1f} px · y={y:.1f} px")
+
+    def update_magnifier(self, *_args) -> None:
+        if self.last_frame is None or self.magnifier_position is None:
+            self.magnifier_label.setPixmap(QPixmap())
+            self.magnifier_label.setText(
+                "Survoler l’image pour activer la loupe"
+            )
+            return
+
+        available_width = max(
+            32,
+            self.magnifier_label.contentsRect().width(),
+        )
+        available_height = max(
+            32,
+            self.magnifier_label.contentsRect().height(),
+        )
+        zoom_factor = float(self.magnifier_zoom_combo.currentData())
+        image_data = magnified_region(
+            self.last_frame,
+            self.magnifier_position,
+            zoom_factor,
+            (available_width, available_height),
+        )
+        height, width = image_data.shape[:2]
+        image = QImage(
+            image_data.data,
+            width,
+            height,
+            image_data.strides[0],
+            QImage.Format.Format_BGR888,
+        ).copy()
+        self.magnifier_label.setText("")
+        self.magnifier_label.setPixmap(QPixmap.fromImage(image))
 
     def show_about(self) -> None:
         QMessageBox.about(
