@@ -1092,14 +1092,7 @@ def converted_length(value_mm: float, unit: str) -> tuple[float, str]:
 
 
 def format_number(value: float) -> str:
-    absolute = abs(value)
-    if absolute >= 100:
-        return f"{value:.2f}"
-    if absolute >= 10:
-        return f"{value:.3f}"
-    if absolute >= 1:
-        return f"{value:.4f}"
-    return f"{value:.5f}"
+    return f"{value:.3f}"
 
 
 def scale_bar_length_mm(scale_bar: ScaleBar) -> float:
@@ -1342,7 +1335,6 @@ def annotate_frame(
     factor = max(0.65, min(2.0, width / 1600.0))
     thickness = max(1, round(factor * 2))
     text_thickness = max(1, round(factor))
-    marker_radius = max(3, round(factor * 4))
 
     if crosshair:
         color = (70, 70, 255)
@@ -1367,15 +1359,6 @@ def annotate_frame(
         points = measurement.points
         integer_points = [(round(point[0]), round(point[1])) for point in points]
         color = cv_color(measurement)
-        for point in integer_points:
-            cv2.circle(
-                image,
-                point,
-                marker_radius,
-                color,
-                thickness,
-                cv2.LINE_AA,
-            )
 
         label = measurement_label(
             measurement, mm_per_pixel, display_unit, ascii_only=True
@@ -1439,7 +1422,6 @@ def annotate_frame(
             )
             radius = round(circle.radius_px)
             cv2.circle(image, center, radius, color, thickness, cv2.LINE_AA)
-            cv2.circle(image, center, marker_radius, color, thickness, cv2.LINE_AA)
 
         position = measurement_label_position(measurement)
         put_cv_label(
@@ -2552,7 +2534,7 @@ class MainWindow(QMainWindow):
                             measurement.name,
                             measurement_color(measurement).name(),
                             TOOL_NAMES[measurement.kind],
-                            f"{value:.10g}",
+                            format_number(value),
                             value_unit,
                             points_to_text(measurement.points),
                             (f"{self.mm_per_pixel:.12g}" if self.mm_per_pixel else ""),

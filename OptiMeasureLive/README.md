@@ -128,8 +128,10 @@ jaune de la loupe indique le pixel visé et n’est pas ajouté aux captures.
 
 Dans le tableau des résultats, double-cliquer sur la colonne **Nom** pour
 identifier une mesure. Par exemple, le nom `toto` produit l’annotation
-`L1 toto: 12.34 mm`. Si le nom est vide, l’annotation reste `L1: 12.34 mm`.
-Le nom est également inclus dans l’export CSV.
+`L1 toto: 12.340 mm`. Si le nom est vide, l’annotation reste
+`L1: 12.340 mm`. Les valeurs sont toujours affichées avec trois chiffres après
+la virgule. Le nom et cette valeur formatée sont également inclus dans l’export
+CSV.
 
 La colonne **Couleur** propose une liste pour personnaliser chaque mesure.
 Le changement s’applique immédiatement à l’image, aux captures et à l’export
@@ -141,7 +143,9 @@ La barre est incluse dans la capture annotée et son texte reste centré au-dess
 d’elle, quel que soit le zoom d’affichage.
 
 Le réticule central reste une aide à l’écran et n’est jamais enregistré dans
-les captures.
+les captures. De la même manière, les marqueurs des points de construction et
+le petit cercle central restent visibles dans l’aperçu pour permettre les
+corrections, mais sont retirés des images enregistrées.
 
 ### Commandes
 
