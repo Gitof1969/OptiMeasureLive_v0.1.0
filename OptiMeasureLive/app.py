@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import csv
 import json
+import struct
 import sys
 import unicodedata
+import zlib
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -91,7 +93,8 @@ from geometry import (
 )
 
 APP_NAME = "OptiMeasure Live"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
+PNG_METADATA_SCHEMA_VERSION = 1
 
 Point = tuple[float, float]
 ScaleBar = tuple[float, str]
@@ -1607,17 +1610,137 @@ def annotate_frame(
     return image
 
 
-def write_png(path: Path, image: np.ndarray) -> bool:
-    """Write a PNG reliably even when the Windows path contains Unicode."""
+def _png_chunk(chunk_type: bytes, data: bytes) -> bytes:
+    checksum = zlib.crc32(chunk_type)
+    checksum = zlib.crc32(data, checksum) & 0xFFFFFFFF
+    return (
+        struct.pack(">I", len(data))
+        + chunk_type
+        + data
+        + struct.pack(">I", checksum)
+    )
+
+
+def _png_itxt_chunk(keyword: str, text: str) -> bytes:
+    keyword_bytes = keyword.encode("latin-1")
+    # Uncompressed iTXt: keyword, compression flag/method, empty language and
+    # translated keyword, then the UTF-8 value.
+    data = keyword_bytes + b"\x00\x00\x00\x00\x00" + text.encode("utf-8")
+    return _png_chunk(b"iTXt", data)
+
+
+def write_png(
+    path: Path,
+    image: np.ndarray,
+    metadata: dict | None = None,
+) -> bool:
+    """Write a Unicode-safe PNG and optionally embed OptiMeasure metadata."""
 
     ok, encoded = cv2.imencode(".png", image)
     if not ok:
         return False
+    png_data = encoded.tobytes()
+    if metadata:
+        capture = metadata.get("capture", {})
+        calibration = metadata.get("calibration", {})
+        objective = metadata.get("objective", {})
+        text_fields = {
+            "Software": f"{APP_NAME} {APP_VERSION}",
+            "Creation Time": str(capture.get("created_at", "")),
+            "Title": str(capture.get("name", "")),
+            "Image Type": str(capture.get("image_type", "")),
+            "Objective": str(objective.get("profile", "")),
+            "Calibration": (
+                f"{calibration['mm_per_pixel']:.12g} mm/pixel"
+                if calibration.get("mm_per_pixel")
+                else "Non calibrée"
+            ),
+            "OptiMeasureLive": json.dumps(
+                metadata,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+        }
+        metadata_chunks = b"".join(
+            _png_itxt_chunk(keyword, value)
+            for keyword, value in text_fields.items()
+            if value
+        )
+        if len(png_data) < 12 or png_data[-8:-4] != b"IEND":
+            return False
+        png_data = png_data[:-12] + metadata_chunks + png_data[-12:]
     try:
-        encoded.tofile(str(path))
+        path.write_bytes(png_data)
     except OSError:
         return False
     return True
+
+
+def read_png_text_metadata(path: Path) -> dict[str, str]:
+    """Read and validate textual metadata chunks from a PNG file."""
+
+    png_data = path.read_bytes()
+    if not png_data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("Le fichier sélectionné n’est pas une image PNG valide.")
+
+    fields: dict[str, str] = {}
+    offset = 8
+    found_end = False
+    while offset + 12 <= len(png_data):
+        length = struct.unpack(">I", png_data[offset : offset + 4])[0]
+        chunk_end = offset + 12 + length
+        if chunk_end > len(png_data):
+            raise ValueError("Les métadonnées PNG sont incomplètes.")
+        chunk_type = png_data[offset + 4 : offset + 8]
+        payload = png_data[offset + 8 : offset + 8 + length]
+        expected_checksum = struct.unpack(">I", png_data[chunk_end - 4 : chunk_end])[0]
+        checksum = zlib.crc32(payload, zlib.crc32(chunk_type)) & 0xFFFFFFFF
+        if checksum != expected_checksum:
+            raise ValueError("Une section du fichier PNG est endommagée.")
+
+        if chunk_type == b"iTXt":
+            try:
+                keyword_bytes, remainder = payload.split(b"\x00", 1)
+                compression_flag = remainder[0]
+                compression_method = remainder[1]
+                language_and_text = remainder[2:]
+                _language, translated_and_text = language_and_text.split(
+                    b"\x00", 1
+                )
+                _translated, text_bytes = translated_and_text.split(b"\x00", 1)
+                if compression_flag == 1:
+                    if compression_method != 0:
+                        raise ValueError
+                    text_bytes = zlib.decompress(text_bytes)
+                elif compression_flag != 0:
+                    raise ValueError
+                fields[keyword_bytes.decode("latin-1")] = text_bytes.decode("utf-8")
+            except (IndexError, UnicodeError, ValueError, zlib.error) as error:
+                raise ValueError("Une métadonnée texte PNG est invalide.") from error
+
+        offset = chunk_end
+        if chunk_type == b"IEND":
+            found_end = True
+            break
+
+    if not found_end:
+        raise ValueError("La fin du fichier PNG est introuvable.")
+    return fields
+
+
+def read_optimeasure_metadata(path: Path) -> dict | None:
+    fields = read_png_text_metadata(path)
+    serialized = fields.get("OptiMeasureLive")
+    if not serialized:
+        return None
+    try:
+        metadata = json.loads(serialized)
+    except json.JSONDecodeError as error:
+        raise ValueError("Les métadonnées OptiMeasure Live sont invalides.") from error
+    if not isinstance(metadata, dict) or metadata.get("format") != "OptiMeasureLive":
+        raise ValueError("Le format des métadonnées OptiMeasure Live est inconnu.")
+    return metadata
 
 
 class MainWindow(QMainWindow):
@@ -1697,6 +1820,8 @@ class MainWindow(QMainWindow):
         layout.setSpacing(8)
         self.sections: dict[str, CollapsibleSection] = {
             "camera": self._build_camera_group(),
+            "opening": self._build_opening_group(),
+            "recording": self._build_recording_group(),
             "objective": self._build_objective_group(),
             "calibration": self._build_calibration_group(),
             "measurements": self._build_measurement_group(),
@@ -1749,20 +1874,39 @@ class MainWindow(QMainWindow):
         grid.addWidget(QLabel("Cadence"), 3, 0)
         grid.addWidget(self.fps_spin, 3, 1)
 
-        button_row = QHBoxLayout()
         self.start_button = QPushButton("Démarrer")
         self.start_button.clicked.connect(self.toggle_camera)
-        self.freeze_button = QPushButton("Figer")
-        self.freeze_button.setCheckable(True)
-        self.freeze_button.setEnabled(False)
-        self.freeze_button.toggled.connect(self.on_freeze_changed)
+        grid.addWidget(self.start_button, 4, 0, 1, 2)
+
+        self.camera_status = QLabel("Arrêtée")
+        self.camera_status.setStyleSheet("color: #9aa4ad;")
+        grid.addWidget(self.camera_status, 5, 0, 1, 2)
+        return group
+
+    def _build_opening_group(self) -> CollapsibleSection:
+        group = CollapsibleSection("Ouvrir")
+        layout = QVBoxLayout()
+        group.set_content_layout(layout)
+
+        self.open_image_button = QPushButton("Ouvrir une image brute")
+        self.open_image_button.clicked.connect(self.open_image)
+        layout.addWidget(self.open_image_button)
+
+        self.open_file_label = QLabel("Aucune image ouverte")
+        self.open_file_label.setWordWrap(True)
+        self.open_file_label.setStyleSheet("color: #9aa4ad;")
+        layout.addWidget(self.open_file_label)
+        return group
+
+    def _build_recording_group(self) -> CollapsibleSection:
+        group = CollapsibleSection("Enregistrer")
+        grid = QGridLayout()
+        group.set_content_layout(grid)
+
         self.capture_button = QPushButton("Capture")
         self.capture_button.setEnabled(False)
         self.capture_button.clicked.connect(self.capture_image)
-        button_row.addWidget(self.start_button)
-        button_row.addWidget(self.freeze_button)
-        button_row.addWidget(self.capture_button)
-        grid.addLayout(button_row, 4, 0, 1, 2)
+        grid.addWidget(self.capture_button, 0, 0, 1, 2)
 
         image_name_row = QHBoxLayout()
         self.image_name_check = QCheckBox("Nom")
@@ -1789,6 +1933,14 @@ class MainWindow(QMainWindow):
                 else color_icon(QColor(color_value))
             )
             self.image_name_background.addItem(icon, label, color_value)
+        for color_combo in (
+            self.image_name_color,
+            self.image_name_background,
+        ):
+            color_combo.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+            )
+            color_combo.setMinimumContentsLength(5)
         self.image_name_check.toggled.connect(self.image_name_edit.setEnabled)
         self.image_name_check.toggled.connect(self.image_name_color.setEnabled)
         self.image_name_check.toggled.connect(
@@ -1807,19 +1959,18 @@ class MainWindow(QMainWindow):
         self.image_name_background.setEnabled(False)
         image_name_row.addWidget(self.image_name_check)
         image_name_row.addWidget(self.image_name_edit, 1)
-        image_name_row.addWidget(self.image_name_color)
-        grid.addLayout(image_name_row, 5, 0, 1, 2)
+        grid.addLayout(image_name_row, 1, 0, 1, 2)
 
-        grid.addWidget(QLabel("Fond du nom"), 6, 0)
-        grid.addWidget(self.image_name_background, 6, 1)
+        image_color_row = QHBoxLayout()
+        image_color_row.addWidget(QLabel("Texte"))
+        image_color_row.addWidget(self.image_name_color, 1)
+        image_color_row.addWidget(QLabel("Fond"))
+        image_color_row.addWidget(self.image_name_background, 1)
+        grid.addLayout(image_color_row, 2, 0, 1, 2)
 
         self.keep_raw_check = QCheckBox("Conserver aussi l’image brute")
         self.keep_raw_check.setChecked(True)
-        grid.addWidget(self.keep_raw_check, 7, 0, 1, 2)
-
-        self.camera_status = QLabel("Arrêtée")
-        self.camera_status.setStyleSheet("color: #9aa4ad;")
-        grid.addWidget(self.camera_status, 8, 0, 1, 2)
+        grid.addWidget(self.keep_raw_check, 3, 0, 1, 2)
         return group
 
     def _build_objective_group(self) -> CollapsibleSection:
@@ -1885,6 +2036,13 @@ class MainWindow(QMainWindow):
         group = CollapsibleSection("Mesures")
         layout = QGridLayout()
         group.set_content_layout(layout)
+
+        self.freeze_button = QPushButton("Figer")
+        self.freeze_button.setCheckable(True)
+        self.freeze_button.setEnabled(False)
+        self.freeze_button.toggled.connect(self.on_freeze_changed)
+        layout.addWidget(self.freeze_button, 0, 0, 1, 2)
+
         self.tool_group = QButtonGroup(self)
         # The buttons behave like independent toggles so the active measurement
         # tool can be disabled by clicking it a second time.
@@ -1897,7 +2055,8 @@ class MainWindow(QMainWindow):
                 ("angle", "Angle · 3 points"),
                 ("circle", "Cercle · 3 points"),
                 ("parallel", "Lignes parallèles · 3 points"),
-            ]
+            ],
+            start=1,
         ):
             button = QPushButton(label)
             button.setCheckable(True)
@@ -1911,7 +2070,7 @@ class MainWindow(QMainWindow):
         self.crosshair_check = QCheckBox("Réticule central")
         self.crosshair_check.setChecked(True)
         self.crosshair_check.toggled.connect(self.canvas.set_crosshair_visible)
-        layout.addWidget(self.crosshair_check, 4, 0, 1, 2)
+        layout.addWidget(self.crosshair_check, 5, 0, 1, 2)
 
         scale_bar_row = QHBoxLayout()
         self.scale_bar_check = QCheckBox("Échelle")
@@ -1928,7 +2087,7 @@ class MainWindow(QMainWindow):
         scale_bar_row.addWidget(self.scale_bar_check)
         scale_bar_row.addWidget(self.scale_bar_length, 1)
         scale_bar_row.addWidget(self.scale_bar_unit)
-        layout.addLayout(scale_bar_row, 5, 0, 1, 2)
+        layout.addLayout(scale_bar_row, 6, 0, 1, 2)
 
         self.scale_bar_check.toggled.connect(self.on_scale_bar_changed)
         self.scale_bar_length.valueChanged.connect(self.on_scale_bar_changed)
@@ -1955,7 +2114,7 @@ class MainWindow(QMainWindow):
         magnifier_row.addWidget(magnifier_title)
         magnifier_row.addWidget(self.magnifier_zoom_combo)
         magnifier_row.addWidget(self.magnifier_coordinates, 1)
-        layout.addLayout(magnifier_row, 6, 0, 1, 2)
+        layout.addLayout(magnifier_row, 7, 0, 1, 2)
 
         self.magnifier_label = QLabel("Survoler l’image pour activer la loupe")
         self.magnifier_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1969,7 +2128,7 @@ class MainWindow(QMainWindow):
         self.magnifier_label.setStyleSheet(
             "QLabel { background-color: #101419; color: #7f8a94; }"
         )
-        layout.addWidget(self.magnifier_label, 7, 0, 1, 2)
+        layout.addWidget(self.magnifier_label, 8, 0, 1, 2)
 
         edit_help = QLabel(
             "Recliquer sur l’outil actif pour le désactiver, puis "
@@ -1978,14 +2137,14 @@ class MainWindow(QMainWindow):
         )
         edit_help.setWordWrap(True)
         edit_help.setStyleSheet("color: #7f8a94;")
-        layout.addWidget(edit_help, 8, 0, 1, 2)
+        layout.addWidget(edit_help, 9, 0, 1, 2)
 
         self.undo_button = QPushButton("Annuler dernière")
         self.undo_button.clicked.connect(self.undo_measurement)
         self.clear_button = QPushButton("Tout effacer")
         self.clear_button.clicked.connect(self.clear_measurements)
-        layout.addWidget(self.undo_button, 9, 0)
-        layout.addWidget(self.clear_button, 9, 1)
+        layout.addWidget(self.undo_button, 10, 0)
+        layout.addWidget(self.clear_button, 10, 1)
         return group
 
     def _build_results_group(self) -> CollapsibleSection:
@@ -2034,6 +2193,11 @@ class MainWindow(QMainWindow):
 
     def _build_menus(self) -> None:
         file_menu = self.menuBar().addMenu("&Fichier")
+        open_action = QAction("Ouvrir une image brute…", self)
+        open_action.setShortcut(QKeySequence("Ctrl+O"))
+        open_action.triggered.connect(self.open_image)
+        file_menu.addAction(open_action)
+
         capture_action = QAction("Capturer l’image", self)
         capture_action.setShortcut(QKeySequence("Ctrl+S"))
         capture_action.triggered.connect(self.capture_image)
@@ -2692,6 +2856,225 @@ class MainWindow(QMainWindow):
             self.refresh_measurements()
             self.statusBar().showMessage("Toutes les mesures ont été effacées.")
 
+    def open_image(self, *_args) -> None:
+        filename, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Ouvrir une image brute OptiMeasure Live",
+            str(self.default_output_directory()),
+            "Image PNG (*.png)",
+        )
+        if not filename:
+            return
+        try:
+            restored = self.load_image(Path(filename))
+        except (OSError, TypeError, ValueError) as error:
+            QMessageBox.warning(
+                self,
+                "Ouverture impossible",
+                str(error),
+            )
+            return
+
+        if restored:
+            self.statusBar().showMessage(
+                "Image brute ouverte : étalonnage et mesures restaurés."
+            )
+        else:
+            self.statusBar().showMessage(
+                "Image ouverte sans métadonnées OptiMeasure Live."
+            )
+
+    def _measurements_from_metadata(
+        self,
+        metadata: dict,
+        mm_per_pixel: float | None,
+        display_unit: str,
+    ) -> list[Measurement]:
+        serialized_measurements = metadata.get("measurements", [])
+        if not isinstance(serialized_measurements, list):
+            raise ValueError("La liste des mesures enregistrées est invalide.")
+
+        restored: list[Measurement] = []
+        for serialized in serialized_measurements:
+            if not isinstance(serialized, dict):
+                raise ValueError("Une mesure enregistrée est invalide.")
+            kind = str(serialized.get("kind", ""))
+            if kind not in TOOL_POINT_COUNTS or kind == "calibration":
+                raise ValueError(f"Type de mesure inconnu : {kind or 'vide'}.")
+            raw_points = serialized.get("points_image_px")
+            if (
+                not isinstance(raw_points, list)
+                or len(raw_points) != TOOL_POINT_COUNTS[kind]
+            ):
+                raise ValueError("Les points d’une mesure enregistrée sont invalides.")
+            try:
+                points = [
+                    (float(point[0]), float(point[1]))
+                    for point in raw_points
+                    if isinstance(point, (list, tuple)) and len(point) == 2
+                ]
+                raw_offset = serialized.get("label_offset_px", [0.0, 0.0])
+                label_offset = (float(raw_offset[0]), float(raw_offset[1]))
+                number = int(serialized.get("number"))
+            except (IndexError, TypeError, ValueError) as error:
+                raise ValueError(
+                    "Les coordonnées d’une mesure enregistrée sont invalides."
+                ) from error
+            if len(points) != TOOL_POINT_COUNTS[kind] or number <= 0:
+                raise ValueError("Une mesure enregistrée est incomplète.")
+            measurement = Measurement(
+                number=number,
+                kind=kind,
+                points=points,
+                name=str(serialized.get("name", "")),
+                color=str(serialized.get("color", "")),
+                label_offset=label_offset,
+                created_at=str(
+                    serialized.get("created_at")
+                    or datetime.now().astimezone().isoformat(timespec="seconds")
+                ),
+            )
+            try:
+                measurement_value(measurement, mm_per_pixel, display_unit)
+            except GeometryError as error:
+                raise ValueError(f"Mesure {number} impossible à restaurer : {error}") from error
+            restored.append(measurement)
+
+        numbers = [measurement.number for measurement in restored]
+        if len(numbers) != len(set(numbers)):
+            raise ValueError("Plusieurs mesures enregistrées portent le même numéro.")
+        return restored
+
+    def _restore_capture_metadata(self, metadata: dict) -> None:
+        calibration = metadata.get("calibration", {})
+        raw_scale = calibration.get("mm_per_pixel")
+        mm_per_pixel = float(raw_scale) if raw_scale is not None else None
+        if mm_per_pixel is not None and mm_per_pixel <= 0:
+            raise ValueError("L’étalonnage enregistré est invalide.")
+        display_unit = str(calibration.get("display_unit", "mm"))
+        if display_unit not in {"mm", "µm"}:
+            display_unit = "mm"
+        measurements = self._measurements_from_metadata(
+            metadata,
+            mm_per_pixel,
+            display_unit,
+        )
+
+        camera = metadata.get("camera", {})
+        if isinstance(camera, dict):
+            self.camera_index.setValue(int(camera.get("index", 0)))
+            backend_index = self.backend_combo.findData(camera.get("backend_id"))
+            if backend_index >= 0:
+                self.backend_combo.setCurrentIndex(backend_index)
+            requested_resolution = camera.get("requested_resolution_px")
+            if isinstance(requested_resolution, (list, tuple)) and len(
+                requested_resolution
+            ) == 2:
+                resolution = (
+                    int(requested_resolution[0]),
+                    int(requested_resolution[1]),
+                )
+                resolution_index = self.resolution_combo.findData(resolution)
+                if resolution_index < 0:
+                    self.resolution_combo.addItem(
+                        f"{resolution[0]} × {resolution[1]}",
+                        resolution,
+                    )
+                    resolution_index = self.resolution_combo.count() - 1
+                self.resolution_combo.setCurrentIndex(resolution_index)
+            self.fps_spin.setValue(int(camera.get("requested_fps", 30)))
+
+        objective = metadata.get("objective", {})
+        profile_name = str(objective.get("profile", "")).strip()
+        self.profile_combo.blockSignals(True)
+        self.profile_combo.setCurrentText(profile_name)
+        self.profile_combo.blockSignals(False)
+        self.objective_combo.blockSignals(True)
+        if profile_name:
+            objective_index = self.objective_combo.findText(profile_name)
+            if objective_index < 0:
+                self.objective_combo.addItem(profile_name)
+                objective_index = self.objective_combo.count() - 1
+            self.objective_combo.setCurrentIndex(objective_index)
+            self.objective_combo.setEnabled(True)
+        else:
+            self.objective_combo.setCurrentIndex(-1)
+        self.objective_combo.blockSignals(False)
+
+        self.mm_per_pixel = mm_per_pixel
+        self.display_unit.setCurrentText(display_unit)
+
+        scale_bar = metadata.get("scale_bar", {})
+        scale_bar_enabled = bool(scale_bar.get("enabled", False))
+        if scale_bar.get("length") is not None:
+            self.scale_bar_length.setValue(float(scale_bar["length"]))
+        if str(scale_bar.get("unit", "")) in {"mm", "µm"}:
+            self.scale_bar_unit.setCurrentText(str(scale_bar["unit"]))
+        self.scale_bar_check.setChecked(scale_bar_enabled)
+
+        image_label = metadata.get("image_label", {})
+        self.image_name_edit.setText(str(image_label.get("text", "")))
+        text_color_index = self.image_name_color.findData(
+            str(image_label.get("text_color", ""))
+        )
+        self.image_name_color.setCurrentIndex(max(0, text_color_index))
+        background_index = self.image_name_background.findData(
+            str(image_label.get("background_color", ""))
+        )
+        self.image_name_background.setCurrentIndex(max(0, background_index))
+        self.image_name_check.setChecked(bool(image_label.get("enabled", False)))
+
+        self.measurements = measurements
+        self.next_measurement_number = max(
+            (measurement.number for measurement in measurements),
+            default=0,
+        ) + 1
+
+    def load_image(self, path: Path) -> bool:
+        metadata = read_optimeasure_metadata(path)
+        if metadata:
+            image_type = str(metadata.get("capture", {}).get("image_type", ""))
+            if image_type and image_type != "raw":
+                raise ValueError(
+                    "Cette image est déjà annotée. Sélectionnez le fichier "
+                    "dont le nom se termine par « _brute.png »."
+                )
+
+        try:
+            encoded = np.fromfile(str(path), dtype=np.uint8)
+        except OSError as error:
+            raise OSError(f"Impossible de lire l’image : {error}") from error
+        frame = cv2.imdecode(encoded, cv2.IMREAD_UNCHANGED)
+        if frame is None:
+            raise ValueError("OpenCV ne peut pas décoder l’image sélectionnée.")
+        if frame.ndim == 3 and frame.shape[2] == 4:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+
+        if self.camera is not None:
+            self.stop_camera()
+        self._uncheck_tool_buttons()
+        self.canvas.set_tool(None)
+        self.freeze_button.setChecked(False)
+        self.freeze_button.setEnabled(False)
+        self.measurements = []
+        self.next_measurement_number = 1
+        self.mm_per_pixel = None
+        self.scale_bar_check.setChecked(False)
+        self.image_name_check.setChecked(False)
+
+        self.last_frame = frame.copy()
+        height, width = frame.shape[:2]
+        self.current_resolution = (width, height)
+        self.canvas.set_frame(frame)
+        if metadata:
+            self._restore_capture_metadata(metadata)
+        self.capture_button.setEnabled(True)
+        self.open_file_label.setText(path.name)
+        self._update_scale_label()
+        self.refresh_measurements()
+        self.update_magnifier()
+        return metadata is not None
+
     def default_output_directory(self) -> Path:
         stored = self.settings.value("capture/output_directory")
         if stored:
@@ -2711,6 +3094,96 @@ class MainWindow(QMainWindow):
             self.settings.setValue("capture/output_directory", selected)
             self.statusBar().showMessage(f"Captures enregistrées dans : {selected}")
 
+    def _build_capture_metadata(
+        self,
+        captured_at: datetime,
+        image_name: str,
+        image_type: str,
+    ) -> dict:
+        display_unit = self.display_unit.currentText()
+        scale_bar = self.selected_scale_bar()
+        profile_name = self.profile_combo.currentText().strip()
+        objective_name = self.objective_combo.currentText().strip() or profile_name
+        profile = self.calibration_store.profiles.get(profile_name, {})
+        height, width = self.last_frame.shape[:2]
+        actual_fps: float | None = None
+        if self.camera is not None:
+            reported_fps = float(self.camera.get(cv2.CAP_PROP_FPS))
+            if reported_fps > 0:
+                actual_fps = reported_fps
+
+        measurements = []
+        for measurement in self.measurements:
+            value, unit = measurement_value(
+                measurement,
+                self.mm_per_pixel,
+                display_unit,
+            )
+            measurements.append(
+                {
+                    "number": measurement.number,
+                    "name": measurement.name,
+                    "kind": measurement.kind,
+                    "type": TOOL_NAMES[measurement.kind],
+                    "value": value,
+                    "unit": unit,
+                    "color": measurement_color(measurement).name(),
+                    "points_image_px": [list(point) for point in measurement.points],
+                    "label_offset_px": list(measurement.label_offset),
+                    "created_at": measurement.created_at,
+                }
+            )
+
+        return {
+            "format": "OptiMeasureLive",
+            "schema_version": PNG_METADATA_SCHEMA_VERSION,
+            "software": {
+                "name": APP_NAME,
+                "version": APP_VERSION,
+            },
+            "capture": {
+                "created_at": captured_at.isoformat(timespec="milliseconds"),
+                "image_type": image_type,
+                "name": image_name,
+                "resolution_px": [width, height],
+            },
+            "camera": {
+                "index": self.camera_index.value(),
+                "backend": self.backend_combo.currentText(),
+                "backend_id": int(self.backend_combo.currentData()),
+                "requested_resolution_px": list(
+                    self.resolution_combo.currentData()
+                ),
+                "requested_fps": self.fps_spin.value(),
+                "reported_fps": actual_fps,
+                "frozen": self.freeze_button.isChecked(),
+            },
+            "objective": {
+                "profile": objective_name,
+            },
+            "calibration": {
+                "mm_per_pixel": self.mm_per_pixel,
+                "display_unit": display_unit,
+                "profile_resolution_px": profile.get("resolution"),
+            },
+            "scale_bar": {
+                "enabled": scale_bar is not None,
+                "length": scale_bar[0] if scale_bar else None,
+                "unit": scale_bar[1] if scale_bar else None,
+            },
+            "image_label": {
+                "enabled": self.image_name_check.isChecked(),
+                "text": image_name,
+                "text_color": str(
+                    self.image_name_color.currentData() or "#ffffff"
+                ),
+                "background_color": str(
+                    self.image_name_background.currentData() or ""
+                ),
+            },
+            "measurements": measurements,
+        }
+
     def capture_image(self) -> None:
         if self.last_frame is None:
             QMessageBox.information(
@@ -2720,7 +3193,8 @@ class MainWindow(QMainWindow):
         output = self.default_output_directory()
         try:
             output.mkdir(parents=True, exist_ok=True)
-            timestamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            captured_at = datetime.now().astimezone()
+            timestamp = captured_at.strftime("%Y%m%d_%H%M%S_%f")[:-3]
             image_name = (
                 self.image_name_edit.text().strip()
                 if self.image_name_check.isChecked()
@@ -2740,11 +3214,21 @@ class MainWindow(QMainWindow):
                 str(self.image_name_background.currentData() or ""),
             )
             annotated_path = output / f"{base_name}.png"
-            if not write_png(annotated_path, annotated):
+            annotated_metadata = self._build_capture_metadata(
+                captured_at,
+                image_name,
+                "annotated",
+            )
+            if not write_png(annotated_path, annotated, annotated_metadata):
                 raise OSError("OpenCV n’a pas pu écrire l’image.")
             if self.keep_raw_check.isChecked():
                 raw_path = output / f"{base_name}_brute.png"
-                if not write_png(raw_path, self.last_frame):
+                raw_metadata = self._build_capture_metadata(
+                    captured_at,
+                    image_name,
+                    "raw",
+                )
+                if not write_png(raw_path, self.last_frame, raw_metadata):
                     raise OSError("OpenCV n’a pas pu écrire l’image brute.")
         except OSError as error:
             QMessageBox.critical(

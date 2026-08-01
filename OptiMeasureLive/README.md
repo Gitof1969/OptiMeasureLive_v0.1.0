@@ -3,7 +3,7 @@
 Application open source d’acquisition et de mesure dimensionnelle pour caméra
 USB, inspirée des logiciels de type DinoCapture.
 
-La version 0.2.0 comprend :
+La version 0.3.0 comprend :
 
 - acquisition en direct d’une caméra UVC/DirectShow ;
 - sélection de la résolution, de la cadence et de l’interface vidéo ;
@@ -25,6 +25,8 @@ La version 0.2.0 comprend :
 - sections repliables et sélection rapide des profils par objectif ;
 - suppression individuelle, annulation et remise à zéro des mesures ;
 - captures annotée et brute en pleine résolution ;
+- métadonnées de traçabilité intégrées directement dans chaque PNG ;
+- réouverture d’une image brute avec restauration de ses mesures et réglages ;
 - export CSV des résultats et des coordonnées image.
 
 Toutes les mesures sont conservées en coordonnées natives de la caméra. Le
@@ -68,12 +70,13 @@ python app.py
 ### 1. Démarrer la caméra
 
 Les flèches `▼` et `▶` permettent respectivement d’ouvrir et de replier les
-sections **Caméra**, **Objectif**, **Étalonnage**, **Mesures** et **Résultats**
-afin de libérer de la place dans le panneau latéral. Leur état est mémorisé.
+sections **Caméra**, **Ouvrir**, **Enregistrer**, **Objectif**, **Étalonnage**,
+**Mesures** et **Résultats** afin de libérer de la place dans le panneau
+latéral. Leur état est mémorisé.
 
-La section **Objectif**, située sous **Caméra**, reprend les profils enregistrés
-dans **Étalonnage**. Sélectionner un objectif charge immédiatement son échelle
-de calibration et synchronise la sélection dans les deux sections.
+La section **Objectif** reprend les profils enregistrés dans **Étalonnage**.
+Sélectionner un objectif charge immédiatement son échelle de calibration et
+synchronise la sélection dans les deux sections.
 
 Choisir :
 
@@ -85,12 +88,22 @@ Choisir :
 Cliquer sur **Démarrer**. Si l’image n’apparaît pas, essayer l’interface
 **Media Foundation** ou **Automatique**.
 
-Sous les boutons de caméra, cocher **Nom**, saisir le nom de l’image puis choisir
-la couleur du texte et celle du fond. Le premier choix du fond, représenté par
-une croix, permet de conserver un texte sans fond. Le résultat apparaît en haut
-à gauche de l’aperçu et est incrusté au même endroit dans la capture. Ce nom
-devient aussi le préfixe du fichier enregistré. Un horodatage lui est ajouté
+La section **Ouvrir** permet de sélectionner une capture dont le nom se termine
+par `_brute.png`. OptiMeasure Live relit les métadonnées intégrées et restaure
+l’objectif, l’étalonnage, les paramètres de capture, la barre d’échelle, le nom
+d’image et toutes les mesures modifiables. Une image PNG sans métadonnées peut
+également être ouverte, mais elle ne contient aucune information à restaurer.
+
+La section **Enregistrer**, située sous **Caméra**, regroupe le bouton
+**Capture**, le nom de l’image, les couleurs du texte et du fond, ainsi que
+l’option de conservation de l’image brute. Le premier choix du fond, représenté
+par une croix, permet de conserver un texte sans fond. Le résultat apparaît en
+haut à gauche de l’aperçu et est incrusté au même endroit dans la capture. Ce
+nom devient aussi le préfixe du fichier enregistré. Un horodatage lui est ajouté
 afin que deux captures successives ne s’écrasent pas.
+
+Le bouton **Figer** se trouve au début de la section **Mesures**, juste au-dessus
+de l’outil **Distance**.
 
 ### 2. Étalonner
 
@@ -172,11 +185,18 @@ corrections, mais sont retirés des images enregistrées.
 | Annuler le pointage en cours | Clic droit ou `Échap` |
 | Annuler la dernière mesure | `Ctrl+Z` |
 | Supprimer la ligne sélectionnée | `Suppr` |
+| Ouvrir une image brute | `Ctrl+O` |
 | Capturer | `Ctrl+S` |
 
 Les captures sont enregistrées par défaut dans
 `Images\OptiMeasureLive`. Le dossier est modifiable par le menu **Fichier**. Si
 le nom d’image n’est pas activé ou reste vide, le préfixe `mesure` est utilisé.
+
+Chaque PNG contient directement ses métadonnées OptiMeasure Live, sans fichier
+annexe : version du logiciel, date, type d’image, caméra, résolution, objectif,
+étalonnage, unité, barre d’échelle et liste complète des mesures avec leurs
+points. Les champs principaux restent lisibles comme métadonnées textuelles PNG
+et le détail complet est conservé dans un bloc JSON versionné.
 
 ## Vérification des calculs
 
