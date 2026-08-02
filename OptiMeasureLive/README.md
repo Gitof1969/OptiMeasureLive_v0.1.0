@@ -46,6 +46,12 @@ Prérequis : Python 3.10 ou plus récent.
 L’installation est isolée dans le sous-dossier `.venv` et ne modifie pas les
 autres installations Python.
 
+## Création de l’exécutable Windows
+
+Double-cliquer sur `compiler_windows.bat`. Le script vérifie les fichiers de
+l’icône, installe PyInstaller dans l’environnement local si nécessaire, puis
+crée `dist\OptiMeasureLive.exe` avec le dossier `assets` intégré.
+
 ## Installation manuelle
 
 Dans PowerShell ou l’invite de commandes :
