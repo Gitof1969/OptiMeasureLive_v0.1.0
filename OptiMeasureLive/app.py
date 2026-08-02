@@ -94,7 +94,33 @@ from geometry import (
 
 APP_NAME = "OptiMeasure Live"
 APP_VERSION = "0.3.0"
+APP_ICON = "assets/optimeasure_icon.png"
 PNG_METADATA_SCHEMA_VERSION = 1
+
+
+def resource_path(relative_path: str) -> Path:
+    """Return a resource path in source and bundled PyInstaller modes."""
+    bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return bundle_root / relative_path
+
+
+def application_icon() -> QIcon:
+    return QIcon(str(resource_path(APP_ICON)))
+
+
+def configure_windows_app_id() -> None:
+    """Give the Windows taskbar a stable identity for the application icon."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "OpenSourceTools.OptiMeasureLive"
+        )
+    except (AttributeError, OSError):
+        pass
+
 
 Point = tuple[float, float]
 ScaleBar = tuple[float, str]
@@ -3366,11 +3392,17 @@ class MainWindow(QMainWindow):
 
 
 def main() -> int:
+    configure_windows_app_id()
     QApplication.setApplicationName(APP_NAME)
     QApplication.setApplicationVersion(APP_VERSION)
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    icon = application_icon()
+    if not icon.isNull():
+        app.setWindowIcon(icon)
     window = MainWindow()
+    if not icon.isNull():
+        window.setWindowIcon(icon)
     window.show()
     return app.exec()
 

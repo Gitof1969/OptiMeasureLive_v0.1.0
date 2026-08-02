@@ -5,6 +5,7 @@ USB, inspirée des logiciels de type DinoCapture.
 
 La version 0.3.0 comprend :
 
+- icône dédiée dans la fenêtre, la barre des tâches et l’exécutable Windows ;
 - acquisition en direct d’une caméra UVC/DirectShow ;
 - sélection de la résolution, de la cadence et de l’interface vidéo ;
 - image figée pour faciliter le pointage ;
