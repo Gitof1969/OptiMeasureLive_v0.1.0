@@ -8,8 +8,10 @@ La version 0.3.0 comprend :
 - icône dédiée dans la fenêtre, la barre des tâches et l’exécutable Windows ;
 - acquisition en direct d’une caméra UVC/DirectShow ;
 - sélection de la résolution, de la cadence et de l’interface vidéo ;
+- rotation du flux de la caméra à 180° ;
 - image figée pour faciliter le pointage ;
 - zoom à la molette et déplacement de l’image ;
+- échelle d’affichage et résolution de l’écran indiquées dans la barre d’état ;
 - réticule central ;
 - étalonnages mémorisés par profil ou objectif ;
 - mesure de distance par deux points ;
@@ -23,7 +25,8 @@ La version 0.3.0 comprend :
   dans la capture et repris dans son fichier ;
 - barre d’échelle paramétrable ajoutée aux captures ;
 - réticule visible à l’écran mais exclu des images enregistrées ;
-- sections repliables et sélection rapide des profils par objectif ;
+- panneaux latéraux gauche et droit redimensionnables avec sections repliables ;
+- sélection rapide des profils par objectif ;
 - suppression individuelle, annulation et remise à zéro des mesures ;
 - captures annotée et brute en pleine résolution ;
 - métadonnées de traçabilité intégrées directement dans chaque PNG ;
@@ -78,8 +81,10 @@ python app.py
 
 Les flèches `▼` et `▶` permettent respectivement d’ouvrir et de replier les
 sections **Caméra**, **Ouvrir**, **Enregistrer**, **Objectif**, **Étalonnage**,
-**Mesures** et **Résultats** afin de libérer de la place dans le panneau
-latéral. Leur état est mémorisé.
+**Mesures** et **Résultats** afin de libérer de la place dans les panneaux
+latéraux. Le panneau gauche regroupe **Caméra**, **Ouvrir**, **Enregistrer** et
+**Étalonnage** ; le panneau droit conserve **Objectif**, **Mesures** et
+**Résultats**. Leur état et la largeur des panneaux sont mémorisés.
 
 La section **Objectif** reprend les profils enregistrés dans **Étalonnage**.
 Sélectionner un objectif charge immédiatement son échelle de calibration et

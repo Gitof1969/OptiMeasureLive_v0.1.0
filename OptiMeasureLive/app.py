@@ -385,6 +385,7 @@ class ImageCanvas(QGraphicsView):
     label_moved = Signal(int, object)
     label_move_finished = Signal(int)
     image_size_changed = Signal()
+    zoom_changed = Signal(float)
     cursor_position = Signal(float, float)
     hint = Signal(str)
 
@@ -420,6 +421,7 @@ class ImageCanvas(QGraphicsView):
         ) = None
         self._crosshair_visible = True
         self._auto_fit = True
+        self._last_emitted_zoom: float | None = None
 
         self.setBackgroundBrush(QBrush(QColor("#101419")))
         self.setRenderHints(
@@ -470,6 +472,17 @@ class ImageCanvas(QGraphicsView):
             self.fitInView(self.pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
             self._auto_fit = True
             self._center_scale_bar_label()
+            self._notify_zoom_changed()
+
+    def _notify_zoom_changed(self) -> None:
+        view_scale = abs(self.transform().m11())
+        if (
+            self._last_emitted_zoom is not None
+            and abs(view_scale - self._last_emitted_zoom) <= 1e-6
+        ):
+            return
+        self._last_emitted_zoom = view_scale
+        self.zoom_changed.emit(view_scale)
 
     def set_crosshair_visible(self, visible: bool) -> None:
         self._crosshair_visible = visible
@@ -1190,6 +1203,7 @@ class ImageCanvas(QGraphicsView):
         if (factor > 1 and current < 25) or (factor < 1 and current > 0.02):
             self.scale(factor, factor)
             self._center_scale_bar_label()
+            self._notify_zoom_changed()
 
     def mouseDoubleClickEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -1775,6 +1789,15 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
         self.resize(1380, 850)
         self.setStatusBar(QStatusBar(self))
+        self.zoom_status_label = QLabel("Échelle image : —")
+        self.zoom_status_label.setMinimumWidth(285)
+        self.zoom_status_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.zoom_status_label.setToolTip(
+            "100 % correspond à un pixel image pour un pixel physique de l’écran."
+        )
+        self.statusBar().addPermanentWidget(self.zoom_status_label)
 
         self.settings = QSettings("OpenSourceTools", "OptiMeasureLive")
         self.calibration_store = CalibrationStore()
@@ -1803,6 +1826,7 @@ class MainWindow(QMainWindow):
             self.finish_measurement_label_move
         )
         self.canvas.image_size_changed.connect(self.refresh_measurements)
+        self.canvas.zoom_changed.connect(self.update_zoom_status)
         self.canvas.cursor_position.connect(self.show_cursor_position)
         self.canvas.hint.connect(self.statusBar().showMessage)
 
@@ -1828,38 +1852,84 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             "Prêt. Choisir la caméra puis cliquer sur Démarrer."
         )
+        self.update_zoom_status()
+        QTimer.singleShot(0, self._connect_screen_tracking)
+
+    def _connect_screen_tracking(self) -> None:
+        window_handle = self.windowHandle()
+        if window_handle is not None:
+            window_handle.screenChanged.connect(self._on_screen_changed)
+        self.update_zoom_status()
+
+    def _on_screen_changed(self, _screen) -> None:
+        self.update_zoom_status()
+
+    def update_zoom_status(self, view_scale: float | None = None) -> None:
+        if view_scale is None:
+            view_scale = abs(self.canvas.transform().m11())
+
+        window_handle = self.windowHandle()
+        screen = window_handle.screen() if window_handle is not None else None
+        if screen is None:
+            screen = QApplication.primaryScreen()
+
+        screen_text = "Écran : inconnu"
+        device_ratio = 1.0
+        if screen is not None:
+            device_ratio = max(float(screen.devicePixelRatio()), 1.0)
+            geometry = screen.geometry()
+            native_width = round(geometry.width() * device_ratio)
+            native_height = round(geometry.height() * device_ratio)
+            screen_text = f"Écran : {native_width} × {native_height} px"
+
+        if self.canvas.has_image:
+            zoom_percent = view_scale * device_ratio * 100.0
+            zoom_text = f"Échelle image : {zoom_percent:.1f} %"
+        else:
+            zoom_text = "Échelle image : —"
+        self.zoom_status_label.setText(f"{zoom_text} · {screen_text}")
 
     def _build_ui(self) -> None:
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self.canvas)
-        splitter.addWidget(self._build_side_panel())
-        splitter.setSizes([1050, 330])
-        splitter.setStretchFactor(0, 1)
-        splitter.setCollapsible(0, False)
-        splitter.setCollapsible(1, False)
-        self.setCentralWidget(splitter)
-
-    def _build_side_panel(self) -> QWidget:
-        content = QWidget()
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
         self.sections: dict[str, CollapsibleSection] = {
             "camera": self._build_camera_group(),
             "opening": self._build_opening_group(),
             "recording": self._build_recording_group(),
-            "objective": self._build_objective_group(),
             "calibration": self._build_calibration_group(),
+            "objective": self._build_objective_group(),
             "measurements": self._build_measurement_group(),
             "results": self._build_results_group(),
         }
-        for section in self.sections.values():
-            layout.addWidget(section)
+
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.left_side_panel = self._build_side_panel(
+            ("camera", "opening", "recording", "calibration")
+        )
+        self.right_side_panel = self._build_side_panel(
+            ("objective", "measurements", "results")
+        )
+        self.main_splitter.addWidget(self.left_side_panel)
+        self.main_splitter.addWidget(self.canvas)
+        self.main_splitter.addWidget(self.right_side_panel)
+        self.main_splitter.setSizes([325, 730, 325])
+        self.main_splitter.setStretchFactor(0, 0)
+        self.main_splitter.setStretchFactor(1, 1)
+        self.main_splitter.setStretchFactor(2, 0)
+        for index in range(3):
+            self.main_splitter.setCollapsible(index, False)
+        self.setCentralWidget(self.main_splitter)
+
+    def _build_side_panel(self, section_keys: Iterable[str]) -> QScrollArea:
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+        for key in section_keys:
+            layout.addWidget(self.sections[key])
         layout.addStretch(1)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setMinimumWidth(325)
+        scroll.setMinimumWidth(300)
         scroll.setWidget(content)
         return scroll
 
@@ -1890,6 +1960,7 @@ class MainWindow(QMainWindow):
         self.fps_spin.setRange(1, 120)
         self.fps_spin.setValue(30)
         self.fps_spin.setSuffix(" i/s")
+        self.rotate_180_check = QCheckBox("Rotation 180°")
 
         grid.addWidget(QLabel("Index"), 0, 0)
         grid.addWidget(self.camera_index, 0, 1)
@@ -1899,14 +1970,15 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.resolution_combo, 2, 1)
         grid.addWidget(QLabel("Cadence"), 3, 0)
         grid.addWidget(self.fps_spin, 3, 1)
+        grid.addWidget(self.rotate_180_check, 4, 0, 1, 2)
 
         self.start_button = QPushButton("Démarrer")
         self.start_button.clicked.connect(self.toggle_camera)
-        grid.addWidget(self.start_button, 4, 0, 1, 2)
+        grid.addWidget(self.start_button, 5, 0, 1, 2)
 
         self.camera_status = QLabel("Arrêtée")
         self.camera_status.setStyleSheet("color: #9aa4ad;")
-        grid.addWidget(self.camera_status, 5, 0, 1, 2)
+        grid.addWidget(self.camera_status, 6, 0, 1, 2)
         return group
 
     def _build_opening_group(self) -> CollapsibleSection:
@@ -2258,6 +2330,9 @@ class MainWindow(QMainWindow):
             int(self.settings.value("camera/resolution_index", 2))
         )
         self.fps_spin.setValue(int(self.settings.value("camera/fps", 30)))
+        self.rotate_180_check.setChecked(
+            self.settings.value("camera/rotate_180", False, type=bool)
+        )
         self.keep_raw_check.setChecked(
             self.settings.value("capture/keep_raw", True, type=bool)
         )
@@ -2309,6 +2384,9 @@ class MainWindow(QMainWindow):
         geometry = self.settings.value("window/geometry")
         if geometry:
             self.restoreGeometry(geometry)
+        splitter_state = self.settings.value("window/main_splitter")
+        if splitter_state:
+            self.main_splitter.restoreState(splitter_state)
 
     def _save_settings(self) -> None:
         self.settings.setValue("camera/index", self.camera_index.value())
@@ -2319,6 +2397,9 @@ class MainWindow(QMainWindow):
             "camera/resolution_index", self.resolution_combo.currentIndex()
         )
         self.settings.setValue("camera/fps", self.fps_spin.value())
+        self.settings.setValue(
+            "camera/rotate_180", self.rotate_180_check.isChecked()
+        )
         self.settings.setValue("capture/keep_raw", self.keep_raw_check.isChecked())
         self.settings.setValue(
             "capture/image_name_enabled", self.image_name_check.isChecked()
@@ -2355,6 +2436,9 @@ class MainWindow(QMainWindow):
             "calibration/profile", self.profile_combo.currentText().strip()
         )
         self.settings.setValue("window/geometry", self.saveGeometry())
+        self.settings.setValue(
+            "window/main_splitter", self.main_splitter.saveState()
+        )
 
     def _refresh_profiles(self, selected: str | None = None) -> None:
         current = selected or self.profile_combo.currentText().strip()
@@ -2468,6 +2552,8 @@ class MainWindow(QMainWindow):
             return
 
         self.consecutive_read_errors = 0
+        if self.rotate_180_check.isChecked():
+            frame = cv2.rotate(frame, cv2.ROTATE_180)
         height, width = frame.shape[:2]
         self.current_resolution = (width, height)
         actual_fps = self.camera.get(cv2.CAP_PROP_FPS)
@@ -3009,6 +3095,9 @@ class MainWindow(QMainWindow):
                     resolution_index = self.resolution_combo.count() - 1
                 self.resolution_combo.setCurrentIndex(resolution_index)
             self.fps_spin.setValue(int(camera.get("requested_fps", 30)))
+            self.rotate_180_check.setChecked(
+                int(camera.get("rotation_degrees", 0)) == 180
+            )
 
         objective = metadata.get("objective", {})
         profile_name = str(objective.get("profile", "")).strip()
@@ -3182,6 +3271,9 @@ class MainWindow(QMainWindow):
                 ),
                 "requested_fps": self.fps_spin.value(),
                 "reported_fps": actual_fps,
+                "rotation_degrees": (
+                    180 if self.rotate_180_check.isChecked() else 0
+                ),
                 "frozen": self.freeze_button.isChecked(),
             },
             "objective": {
