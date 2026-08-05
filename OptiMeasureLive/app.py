@@ -96,6 +96,9 @@ APP_NAME = "OptiMeasure Live"
 APP_VERSION = "0.3.0"
 APP_ICON = "assets/optimeasure_icon.png"
 PNG_METADATA_SCHEMA_VERSION = 1
+POINTING_UNCERTAINTY_PX = 1.0
+DISTANCE_UNCERTAINTY_PX = POINTING_UNCERTAINTY_PX * 2.0
+MAX_RELATIVE_UNCERTAINTY_PERCENT = 1.0
 
 
 def resource_path(relative_path: str) -> Path:
@@ -189,6 +192,43 @@ class Measurement:
         default_factory=lambda: (
             datetime.now().astimezone().isoformat(timespec="seconds")
         )
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class DistanceUncertaintyAssessment:
+    measured_mm: float
+    uncertainty_mm: float
+    relative_percent: float
+    required_mm_per_pixel: float
+
+
+def assess_distance_uncertainty(
+    measurement: Measurement,
+    mm_per_pixel: float,
+) -> DistanceUncertaintyAssessment:
+    """Estimate distance uncertainty from one-pixel endpoint placement."""
+    if measurement.kind != "distance":
+        raise ValueError("L’incertitude est définie pour les distances uniquement.")
+    if mm_per_pixel <= 0:
+        raise ValueError("Le rapport mm/pixel doit être strictement positif.")
+    length_px = distance_px(*measurement.points[:2])
+    if length_px <= 1e-12:
+        raise ValueError("La distance mesurée doit être strictement positive.")
+    measured_mm = length_px * mm_per_pixel
+    uncertainty_mm = DISTANCE_UNCERTAINTY_PX * mm_per_pixel
+    relative_percent = uncertainty_mm / measured_mm * 100.0
+    required_mm_per_pixel = (
+        measured_mm
+        * MAX_RELATIVE_UNCERTAINTY_PERCENT
+        / 100.0
+        / DISTANCE_UNCERTAINTY_PX
+    )
+    return DistanceUncertaintyAssessment(
+        measured_mm=measured_mm,
+        uncertainty_mm=uncertainty_mm,
+        relative_percent=relative_percent,
+        required_mm_per_pixel=required_mm_per_pixel,
     )
 
 
@@ -386,6 +426,7 @@ class ImageCanvas(QGraphicsView):
     label_move_finished = Signal(int)
     image_size_changed = Signal()
     zoom_changed = Signal(float)
+    tool_released = Signal()
     cursor_position = Signal(float, float)
     hint = Signal(str)
 
@@ -422,6 +463,7 @@ class ImageCanvas(QGraphicsView):
         self._crosshair_visible = True
         self._auto_fit = True
         self._last_emitted_zoom: float | None = None
+        self._tool_completed_on_press = False
 
         self.setBackgroundBrush(QBrush(QColor("#101419")))
         self.setRenderHints(
@@ -1016,6 +1058,7 @@ class ImageCanvas(QGraphicsView):
                 tool = self._active_tool
                 points = list(self._pending_points)
                 self.cancel_pending()
+                self._tool_completed_on_press = True
                 self.tool_completed.emit(tool, points)
             event.accept()
             return
@@ -1153,6 +1196,15 @@ class ImageCanvas(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._tool_completed_on_press
+        ):
+            self._tool_completed_on_press = False
+            self.tool_released.emit()
+            event.accept()
+            return
+
         if (
             event.button() == Qt.MouseButton.LeftButton
             and self._dragged_point is not None
@@ -1811,9 +1863,13 @@ class MainWindow(QMainWindow):
         self.next_measurement_number = 1
         self.current_resolution: tuple[int, int] | None = None
         self.magnifier_position: Point | None = None
+        self._pending_uncertainty_measurement_number: int | None = None
 
         self.canvas = ImageCanvas()
         self.canvas.tool_completed.connect(self.on_tool_completed)
+        self.canvas.tool_released.connect(
+            self._show_pending_uncertainty_warning
+        )
         self.canvas.point_selected.connect(self.select_measurement)
         self.canvas.point_moved.connect(self.move_measurement_point)
         self.canvas.point_move_finished.connect(self.finish_measurement_point_move)
@@ -2168,7 +2224,14 @@ class MainWindow(QMainWindow):
         self.crosshair_check = QCheckBox("Réticule central")
         self.crosshair_check.setChecked(True)
         self.crosshair_check.toggled.connect(self.canvas.set_crosshair_visible)
-        layout.addWidget(self.crosshair_check, 5, 0, 1, 2)
+        layout.addWidget(self.crosshair_check, 5, 0)
+
+        self.uncertainty_alert_check = QCheckBox("Alerte incertitude")
+        self.uncertainty_alert_check.setToolTip(
+            "Alerter si l’incertitude estimée d’une distance dépasse 1 %\n"
+            "(hypothèse : ±1 pixel par point)."
+        )
+        layout.addWidget(self.uncertainty_alert_check, 5, 1)
 
         scale_bar_row = QHBoxLayout()
         self.scale_bar_check = QCheckBox("Échelle")
@@ -2372,6 +2435,11 @@ class MainWindow(QMainWindow):
                 "measurement/scale_bar_enabled", False, type=bool
             )
         )
+        self.uncertainty_alert_check.setChecked(
+            self.settings.value(
+                "measurement/uncertainty_alert_enabled", False, type=bool
+            )
+        )
         self.magnifier_zoom_combo.setCurrentText(
             str(self.settings.value("measurement/magnifier_zoom", "800 %"))
         )
@@ -2417,6 +2485,10 @@ class MainWindow(QMainWindow):
         self.settings.setValue("measurement/unit", self.display_unit.currentText())
         self.settings.setValue(
             "measurement/scale_bar_enabled", self.scale_bar_check.isChecked()
+        )
+        self.settings.setValue(
+            "measurement/uncertainty_alert_enabled",
+            self.uncertainty_alert_check.isChecked(),
         )
         self.settings.setValue(
             "measurement/scale_bar_length", self.scale_bar_length.value()
@@ -2616,6 +2688,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Outil annulé.")
 
     def on_tool_completed(self, kind: str, raw_points: object) -> None:
+        self._pending_uncertainty_measurement_number = None
         points = [(float(x), float(y)) for x, y in raw_points]
         if kind == "calibration":
             known_mm = self.reference_length.value()
@@ -2664,6 +2737,7 @@ class MainWindow(QMainWindow):
             return
         self.next_measurement_number += 1
         self.measurements.append(measurement)
+        self._pending_uncertainty_measurement_number = measurement.number
         self.refresh_measurements()
         self.statusBar().showMessage(
             f"{TOOL_NAMES[kind]} ajoutée. L’outil reste actif."
@@ -2749,6 +2823,118 @@ class MainWindow(QMainWindow):
 
     def finish_measurement_point_move(self, number: int, _point_index: int) -> None:
         self._show_adjusted_measurement(number)
+        self._show_uncertainty_warning(number)
+
+    def _show_pending_uncertainty_warning(self) -> None:
+        number = self._pending_uncertainty_measurement_number
+        self._pending_uncertainty_measurement_number = None
+        if number is not None:
+            self._show_uncertainty_warning(number)
+
+    def _minimum_uncertainty_profile(
+        self,
+        required_mm_per_pixel: float,
+    ) -> tuple[str, dict, float] | None:
+        candidates: list[tuple[str, dict, float]] = []
+        for name, profile in self.calibration_store.profiles.items():
+            try:
+                profile_scale = float(profile.get("mm_per_pixel", 0))
+            except (TypeError, ValueError):
+                continue
+            if 0 < profile_scale <= required_mm_per_pixel * (1.0 + 1e-12):
+                candidates.append((name, profile, profile_scale))
+        if not candidates:
+            return None
+        # The largest acceptable mm/pixel ratio corresponds to the lowest
+        # magnification that still satisfies the requested uncertainty.
+        return max(candidates, key=lambda candidate: candidate[2])
+
+    def _show_uncertainty_warning(self, number: int) -> None:
+        if not self.uncertainty_alert_check.isChecked() or not self.mm_per_pixel:
+            return
+        measurement = next(
+            (item for item in self.measurements if item.number == number),
+            None,
+        )
+        if measurement is None or measurement.kind != "distance":
+            return
+
+        try:
+            assessment = assess_distance_uncertainty(
+                measurement,
+                self.mm_per_pixel,
+            )
+        except ValueError:
+            return
+        if (
+            assessment.relative_percent
+            <= MAX_RELATIVE_UNCERTAINTY_PERCENT + 1e-12
+        ):
+            return
+
+        display_unit = self.display_unit.currentText()
+        measured_value, measured_unit = converted_length(
+            assessment.measured_mm,
+            display_unit,
+        )
+        uncertainty_value, uncertainty_unit = converted_length(
+            assessment.uncertainty_mm,
+            display_unit,
+        )
+        required_microns_per_pixel = assessment.required_mm_per_pixel * 1000.0
+        current_microns_per_pixel = self.mm_per_pixel * 1000.0
+
+        details = [
+            f"Mesure L{measurement.number} : "
+            f"{format_number(measured_value)} {measured_unit}",
+            f"Incertitude estimée : ±{format_number(uncertainty_value)} "
+            f"{uncertainty_unit} ({assessment.relative_percent:.2f} %)",
+            f"Limite acceptée : {MAX_RELATIVE_UNCERTAINTY_PERCENT:.2f} %",
+            "",
+            f"Rapport actuel : 1 px = {current_microns_per_pixel:.3f} µm",
+            f"Rapport requis : 1 px ≤ {required_microns_per_pixel:.3f} µm",
+        ]
+
+        recommended = self._minimum_uncertainty_profile(
+            assessment.required_mm_per_pixel
+        )
+        if recommended is None:
+            details.extend(
+                [
+                    "",
+                    "Aucun objectif enregistré ne satisfait actuellement "
+                    "cette limite.",
+                ]
+            )
+        else:
+            profile_name, profile, profile_scale = recommended
+            profile_relative = (
+                DISTANCE_UNCERTAINTY_PX
+                * profile_scale
+                / assessment.measured_mm
+                * 100.0
+            )
+            details.extend(
+                [
+                    "",
+                    f"Objectif minimum conseillé : {profile_name}",
+                    f"Rapport : 1 px = {profile_scale * 1000.0:.3f} µm "
+                    f"({profile_relative:.2f} %)",
+                ]
+            )
+            resolution = profile.get("resolution")
+            if isinstance(resolution, (list, tuple)) and len(resolution) == 2:
+                details.append(
+                    f"Résolution du profil : {resolution[0]} × {resolution[1]} px"
+                )
+
+        message = QMessageBox(self)
+        message.setIcon(QMessageBox.Icon.Warning)
+        message.setWindowTitle("Incertitude de mesure")
+        message.setText("La précision estimée est insuffisante pour cette distance.")
+        message.setInformativeText("\n".join(details))
+        message.addButton("Valider", QMessageBox.ButtonRole.AcceptRole)
+        message.exec()
 
     def move_measurement(self, number: int, raw_points: object) -> None:
         measurement = next(

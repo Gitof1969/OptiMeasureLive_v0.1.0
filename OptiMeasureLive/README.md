@@ -20,6 +20,7 @@ La version 0.3.0 comprend :
 - distance perpendiculaire entre deux lignes parallèles définies par trois
   points ;
 - modification d’un point et déplacement complet d’une mesure ;
+- alerte d’incertitude relative et recommandation d’un objectif adapté ;
 - noms et couleurs personnalisables dans le tableau des résultats ;
 - nom d’image avec couleurs de texte et de fond, visible dans l’aperçu, incrusté
   dans la capture et repris dans son fichier ;
@@ -159,6 +160,13 @@ La **Loupe de pointage**, placée sous le réglage de la barre d’échelle, agr
 la zone située sous le curseur pendant la création ou la modification d’une
 mesure. Les grossissements disponibles vont de `200 %` à `1600 %`. Le réticule
 jaune de la loupe indique le pixel visé et n’est pas ajouté aux captures.
+
+La case **Alerte incertitude**, située à droite de **Réticule central**, contrôle
+les distances à deux points. Avec l’hypothèse de pointage validée de ±1 pixel
+par extrémité, l’incertitude estimée vaut ±2 pixels. Après le relâchement de la
+souris, une alerte apparaît si elle dépasse 1 % de la distance mesurée. Elle
+indique l’incertitude absolue et relative, le rapport mm/pixel requis et le
+profil d’objectif enregistré le moins grossissant qui satisfait cette limite.
 
 Dans le tableau des résultats, double-cliquer sur la colonne **Nom** pour
 identifier une mesure. Par exemple, le nom `toto` produit l’annotation
