@@ -24,6 +24,7 @@ La version 0.3.0 comprend :
 - noms et couleurs personnalisables dans le tableau des résultats ;
 - nom d’image avec couleurs de texte et de fond, visible dans l’aperçu, incrusté
   dans la capture et repris dans son fichier ;
+- utilisateurs mémorisés avec classement automatique des captures par dossier ;
 - barre d’échelle paramétrable ajoutée aux captures ;
 - réticule visible à l’écran mais exclu des images enregistrées ;
 - panneaux latéraux gauche et droit redimensionnables avec sections repliables ;
@@ -108,12 +109,19 @@ d’image et toutes les mesures modifiables. Une image PNG sans métadonnées pe
 également être ouverte, mais elle ne contient aucune information à restaurer.
 
 La section **Enregistrer**, située sous **Caméra**, regroupe le bouton
-**Capture**, le nom de l’image, les couleurs du texte et du fond, ainsi que
-l’option de conservation de l’image brute. Le premier choix du fond, représenté
-par une croix, permet de conserver un texte sans fond. Le résultat apparaît en
-haut à gauche de l’aperçu et est incrusté au même endroit dans la capture. Ce
-nom devient aussi le préfixe du fichier enregistré. Un horodatage lui est ajouté
-afin que deux captures successives ne s’écrasent pas.
+**Capture**, la liste **Utilisateur**, le nom de l’image, les couleurs du texte
+et du fond, ainsi que l’option de conservation de l’image brute. La liste est
+éditable : saisir un nouvel utilisateur l’ajoute lors de sa première capture.
+Son dossier est créé automatiquement dans le dossier principal des captures.
+À chaque capture, une fenêtre permet de sélectionner ce dossier ou de créer et
+sélectionner un répertoire de travail à l’intérieur, par exemple
+`Alice Martin\Projet 2026\Échantillon A`. Le dernier répertoire utilisé sert de
+point de départ à la prochaine capture. L’utilisateur et le chemin relatif du
+répertoire de travail sont aussi inscrits dans les métadonnées PNG. Le premier
+choix du fond, représenté par une croix, permet de conserver un texte sans fond.
+Le résultat apparaît en haut à gauche de l’aperçu et est incrusté au même endroit
+dans la capture. Ce nom devient aussi le préfixe du fichier enregistré. Un
+horodatage lui est ajouté afin que deux captures successives ne s’écrasent pas.
 
 Le bouton **Figer** se trouve au début de la section **Mesures**, juste au-dessus
 de l’outil **Distance**.

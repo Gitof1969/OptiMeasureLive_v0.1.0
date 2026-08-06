@@ -1736,11 +1736,13 @@ def write_png(
         capture = metadata.get("capture", {})
         calibration = metadata.get("calibration", {})
         objective = metadata.get("objective", {})
+        user = metadata.get("user", {})
         text_fields = {
             "Software": f"{APP_NAME} {APP_VERSION}",
             "Creation Time": str(capture.get("created_at", "")),
             "Title": str(capture.get("name", "")),
             "Image Type": str(capture.get("image_type", "")),
+            "Author": str(user.get("name", "")),
             "Objective": str(objective.get("profile", "")),
             "Calibration": (
                 f"{calibration['mm_per_pixel']:.12g} mm/pixel"
@@ -2062,6 +2064,17 @@ class MainWindow(QMainWindow):
         self.capture_button.clicked.connect(self.capture_image)
         grid.addWidget(self.capture_button, 0, 0, 1, 2)
 
+        self.user_combo = QComboBox()
+        self.user_combo.setEditable(True)
+        self.user_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.user_combo.setPlaceholderText("Sélectionner ou saisir un utilisateur")
+        self.user_combo.setToolTip(
+            "Les captures seront enregistrées dans un sous-dossier portant "
+            "le nom de l’utilisateur."
+        )
+        grid.addWidget(QLabel("Utilisateur"), 1, 0)
+        grid.addWidget(self.user_combo, 1, 1)
+
         image_name_row = QHBoxLayout()
         self.image_name_check = QCheckBox("Nom")
         self.image_name_check.setToolTip(
@@ -2113,18 +2126,18 @@ class MainWindow(QMainWindow):
         self.image_name_background.setEnabled(False)
         image_name_row.addWidget(self.image_name_check)
         image_name_row.addWidget(self.image_name_edit, 1)
-        grid.addLayout(image_name_row, 1, 0, 1, 2)
+        grid.addLayout(image_name_row, 2, 0, 1, 2)
 
         image_color_row = QHBoxLayout()
         image_color_row.addWidget(QLabel("Texte"))
         image_color_row.addWidget(self.image_name_color, 1)
         image_color_row.addWidget(QLabel("Fond"))
         image_color_row.addWidget(self.image_name_background, 1)
-        grid.addLayout(image_color_row, 2, 0, 1, 2)
+        grid.addLayout(image_color_row, 3, 0, 1, 2)
 
         self.keep_raw_check = QCheckBox("Conserver aussi l’image brute")
         self.keep_raw_check.setChecked(True)
-        grid.addWidget(self.keep_raw_check, 3, 0, 1, 2)
+        grid.addWidget(self.keep_raw_check, 4, 0, 1, 2)
         return group
 
     def _build_objective_group(self) -> CollapsibleSection:
@@ -2399,6 +2412,9 @@ class MainWindow(QMainWindow):
         self.keep_raw_check.setChecked(
             self.settings.value("capture/keep_raw", True, type=bool)
         )
+        self._refresh_users(
+            str(self.settings.value("capture/current_user", "")).strip()
+        )
         self.image_name_edit.setText(
             str(self.settings.value("capture/image_name", ""))
         )
@@ -2469,6 +2485,16 @@ class MainWindow(QMainWindow):
             "camera/rotate_180", self.rotate_180_check.isChecked()
         )
         self.settings.setValue("capture/keep_raw", self.keep_raw_check.isChecked())
+        self.settings.setValue(
+            "capture/current_user", self.user_combo.currentText().strip()
+        )
+        self.settings.setValue(
+            "capture/users",
+            [
+                self.user_combo.itemText(index)
+                for index in range(self.user_combo.count())
+            ],
+        )
         self.settings.setValue(
             "capture/image_name_enabled", self.image_name_check.isChecked()
         )
@@ -3325,6 +3351,12 @@ class MainWindow(QMainWindow):
         self.image_name_background.setCurrentIndex(max(0, background_index))
         self.image_name_check.setChecked(bool(image_label.get("enabled", False)))
 
+        user = metadata.get("user", {})
+        if isinstance(user, dict):
+            user_name = str(user.get("name", "")).strip()
+            if user_name:
+                self._remember_user(user_name)
+
         self.measurements = measurements
         self.next_measurement_number = max(
             (measurement.number for measurement in measurements),
@@ -3385,6 +3417,63 @@ class MainWindow(QMainWindow):
         )
         return Path(pictures) / "OptiMeasureLive"
 
+    def _stored_users(self) -> list[str]:
+        stored = self.settings.value("capture/users", [])
+        if isinstance(stored, str):
+            candidates = [stored]
+        elif isinstance(stored, (list, tuple)):
+            candidates = [str(value) for value in stored]
+        else:
+            candidates = []
+        return [name.strip() for name in candidates if name.strip()]
+
+    def _refresh_users(self, selected: str = "") -> None:
+        users = set(self._stored_users())
+        output_directory = self.default_output_directory()
+        try:
+            if output_directory.is_dir():
+                users.update(
+                    path.name
+                    for path in output_directory.iterdir()
+                    if path.is_dir()
+                )
+        except OSError:
+            pass
+
+        selected = selected.strip()
+        if selected:
+            users.add(selected)
+        ordered_users = sorted(users, key=str.casefold)
+        self.user_combo.blockSignals(True)
+        self.user_combo.clear()
+        self.user_combo.addItems(ordered_users)
+        self.user_combo.setCurrentText(selected)
+        self.user_combo.blockSignals(False)
+
+    def _remember_user(self, user_name: str) -> None:
+        user_name = user_name.strip()
+        existing = {
+            self.user_combo.itemText(index).casefold(): index
+            for index in range(self.user_combo.count())
+        }
+        matching_index = existing.get(user_name.casefold())
+        if matching_index is None:
+            self.user_combo.addItem(user_name)
+        else:
+            user_name = self.user_combo.itemText(matching_index)
+        users = sorted(
+            {
+                self.user_combo.itemText(index)
+                for index in range(self.user_combo.count())
+            },
+            key=str.casefold,
+        )
+        self.user_combo.clear()
+        self.user_combo.addItems(users)
+        self.user_combo.setCurrentText(user_name)
+        self.settings.setValue("capture/users", users)
+        self.settings.setValue("capture/current_user", user_name)
+
     def choose_output_directory(self) -> None:
         selected = QFileDialog.getExistingDirectory(
             self,
@@ -3393,13 +3482,70 @@ class MainWindow(QMainWindow):
         )
         if selected:
             self.settings.setValue("capture/output_directory", selected)
+            self._refresh_users(self.user_combo.currentText())
             self.statusBar().showMessage(f"Captures enregistrées dans : {selected}")
+
+    def _choose_user_work_directory(
+        self,
+        user_name: str,
+        user_directory: str,
+    ) -> Path | None:
+        user_root = self.default_output_directory() / user_directory
+        try:
+            user_root.mkdir(parents=True, exist_ok=True)
+            resolved_user_root = user_root.resolve()
+        except OSError as error:
+            QMessageBox.critical(
+                self,
+                "Dossier utilisateur inaccessible",
+                f"Impossible de préparer le dossier de {user_name} :\n{error}",
+            )
+            return None
+
+        setting_key = f"capture/work_directory/{user_directory}"
+        stored = self.settings.value(setting_key)
+        starting_directory = resolved_user_root
+        if stored:
+            try:
+                stored_path = Path(str(stored)).resolve()
+                stored_path.relative_to(resolved_user_root)
+                if stored_path.is_dir():
+                    starting_directory = stored_path
+            except (OSError, ValueError):
+                pass
+
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            f"Répertoire de travail — {user_name}",
+            str(starting_directory),
+            QFileDialog.Option.ShowDirsOnly,
+        )
+        if not selected:
+            return None
+
+        try:
+            selected_path = Path(selected).resolve()
+            selected_path.relative_to(resolved_user_root)
+        except (OSError, ValueError):
+            QMessageBox.warning(
+                self,
+                "Répertoire non autorisé",
+                "Le répertoire de travail doit se trouver dans le dossier "
+                f"de l’utilisateur :\n{resolved_user_root}",
+            )
+            return None
+
+        self.settings.setValue(setting_key, str(selected_path))
+        return selected_path
 
     def _build_capture_metadata(
         self,
         captured_at: datetime,
         image_name: str,
         image_type: str,
+        user_name: str,
+        user_directory: str,
+        work_directory: str,
     ) -> dict:
         display_unit = self.display_unit.currentText()
         scale_bar = self.selected_scale_bar()
@@ -3407,6 +3553,12 @@ class MainWindow(QMainWindow):
         objective_name = self.objective_combo.currentText().strip() or profile_name
         profile = self.calibration_store.profiles.get(profile_name, {})
         height, width = self.last_frame.shape[:2]
+        requested_resolution = self.resolution_combo.currentData()
+        if (
+            not isinstance(requested_resolution, (list, tuple))
+            or len(requested_resolution) != 2
+        ):
+            requested_resolution = (width, height)
         actual_fps: float | None = None
         if self.camera is not None:
             reported_fps = float(self.camera.get(cv2.CAP_PROP_FPS))
@@ -3448,13 +3600,16 @@ class MainWindow(QMainWindow):
                 "name": image_name,
                 "resolution_px": [width, height],
             },
+            "user": {
+                "name": user_name,
+                "directory": user_directory,
+                "work_directory": work_directory,
+            },
             "camera": {
                 "index": self.camera_index.value(),
                 "backend": self.backend_combo.currentText(),
                 "backend_id": int(self.backend_combo.currentData()),
-                "requested_resolution_px": list(
-                    self.resolution_combo.currentData()
-                ),
+                "requested_resolution_px": list(requested_resolution),
                 "requested_fps": self.fps_spin.value(),
                 "reported_fps": actual_fps,
                 "rotation_degrees": (
@@ -3494,7 +3649,36 @@ class MainWindow(QMainWindow):
                 self, "Aucune image", "Aucune image n’est disponible."
             )
             return
-        output = self.default_output_directory()
+        user_name = self.user_combo.currentText().strip()
+        if not user_name:
+            QMessageBox.information(
+                self,
+                "Utilisateur requis",
+                "Sélectionnez un utilisateur ou saisissez un nouveau nom "
+                "avant la capture.",
+            )
+            self.user_combo.setFocus()
+            return
+        user_directory = safe_capture_filename_stem(user_name)
+        if not user_directory:
+            QMessageBox.warning(
+                self,
+                "Utilisateur invalide",
+                "Le nom de l’utilisateur ne permet pas de créer un dossier valide.",
+            )
+            self.user_combo.setFocus()
+            return
+
+        user_root = self.default_output_directory() / user_directory
+        output = self._choose_user_work_directory(user_name, user_directory)
+        if output is None:
+            return
+        relative_work_directory = output.relative_to(user_root.resolve())
+        work_directory = (
+            "."
+            if str(relative_work_directory) == "."
+            else relative_work_directory.as_posix()
+        )
         try:
             output.mkdir(parents=True, exist_ok=True)
             captured_at = datetime.now().astimezone()
@@ -3522,6 +3706,9 @@ class MainWindow(QMainWindow):
                 captured_at,
                 image_name,
                 "annotated",
+                user_name,
+                user_directory,
+                work_directory,
             )
             if not write_png(annotated_path, annotated, annotated_metadata):
                 raise OSError("OpenCV n’a pas pu écrire l’image.")
@@ -3531,6 +3718,9 @@ class MainWindow(QMainWindow):
                     captured_at,
                     image_name,
                     "raw",
+                    user_name,
+                    user_directory,
+                    work_directory,
                 )
                 if not write_png(raw_path, self.last_frame, raw_metadata):
                     raise OSError("OpenCV n’a pas pu écrire l’image brute.")
@@ -3539,6 +3729,7 @@ class MainWindow(QMainWindow):
                 self, "Capture impossible", f"Échec de l’enregistrement :\n{error}"
             )
             return
+        self._remember_user(user_name)
         self.statusBar().showMessage(f"Capture enregistrée : {annotated_path}")
 
     def export_csv(self) -> None:
