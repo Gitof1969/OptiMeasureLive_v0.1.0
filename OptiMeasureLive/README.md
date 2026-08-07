@@ -189,6 +189,15 @@ d’image. Le changement s’applique immédiatement à l’image, aux captures 
 l’export CSV. Le choix **Par défaut** rétablit la couleur associée au type de
 mesure.
 
+La case **Fond**, placée au-dessus du tableau **Résultats**, ajoute un fond
+semi-transparent derrière les annotations de toutes les mesures. Ce fond est
+blanc par défaut et devient sombre lorsque la couleur du texte est blanche.
+La couleur choisie pour la mesure reste opaque. La commande **Opacité**, placée
+à côté, ajuste ce fond de `0 %` (invisible) à `100 %` (opaque). Ces réglages sont
+repris dans l’aperçu et les captures, puis mémorisés dans les préférences et les
+métadonnées PNG. Le texte des annotations est affiché en gras, sans contour ni
+ombre noire, et reste toujours dessiné devant son fond.
+
 La case **Échelle** ajoute une barre d’échelle en bas à droite. Saisir sa
 longueur et choisir `mm` ou `µm`. Un profil d’étalonnage actif est nécessaire.
 La barre est incluse dans la capture annotée et son texte reste centré au-dessus

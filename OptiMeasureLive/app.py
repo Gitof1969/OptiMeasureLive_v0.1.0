@@ -34,6 +34,7 @@ from PySide6.QtGui import (
     QBrush,
     QCloseEvent,
     QColor,
+    QFont,
     QImage,
     QIcon,
     QKeySequence,
@@ -99,6 +100,8 @@ PNG_METADATA_SCHEMA_VERSION = 1
 POINTING_UNCERTAINTY_PX = 1.0
 DISTANCE_UNCERTAINTY_PX = POINTING_UNCERTAINTY_PX * 2.0
 MAX_RELATIVE_UNCERTAINTY_PERCENT = 1.0
+LABEL_BACKGROUND_ALPHA = 170
+LABEL_BACKGROUND_OPACITY_PERCENT = round(LABEL_BACKGROUND_ALPHA / 255 * 100)
 
 
 def resource_path(relative_path: str) -> Path:
@@ -237,6 +240,21 @@ def measurement_color(measurement: Measurement) -> QColor:
     if measurement.color and custom.isValid():
         return custom
     return TOOL_COLORS[measurement.kind]
+
+
+def contrasting_label_background(
+    text_color: QColor,
+    alpha: int = LABEL_BACKGROUND_ALPHA,
+) -> QColor:
+    """Return a white background, or a dark one behind white text."""
+    alpha = max(0, min(255, alpha))
+    if (
+        text_color.red() == 255
+        and text_color.green() == 255
+        and text_color.blue() == 255
+    ):
+        return QColor(16, 16, 16, alpha)
+    return QColor(255, 255, 255, alpha)
 
 
 def measurement_label_anchor(measurement: Measurement) -> Point:
@@ -734,7 +752,11 @@ class ImageCanvas(QGraphicsView):
         items_at_position = self.items(position.toPoint())
         for hit_item in items_at_position:
             for number, label_item in self._editable_labels:
-                if hit_item is label_item or hit_item == label_item:
+                if (
+                    hit_item is label_item
+                    or hit_item == label_item
+                    or hit_item.parentItem() is label_item
+                ):
                     return number, label_item
         return None
 
@@ -784,16 +806,45 @@ class ImageCanvas(QGraphicsView):
         text: str,
         color: QColor,
         collection: list[QGraphicsItem],
+        background_color: QColor | None = None,
+        bold: bool = False,
+        outline: bool = True,
     ) -> QGraphicsSimpleTextItem:
         item = QGraphicsSimpleTextItem(text)
+        if bold:
+            font = item.font()
+            font.setWeight(QFont.Weight.Bold)
+            item.setFont(font)
         item.setBrush(QBrush(color))
-        # Use the measurement color for both the glyph fill and its fine edge.
-        # A black pen at this size can visually cover the colored glyph.
-        item.setPen(QPen(color, 0.5))
+        item.setPen(
+            QPen(color, 0.5)
+            if outline
+            else QPen(Qt.PenStyle.NoPen)
+        )
         item.setPos(*position)
         item.setRotation(0.0)
         item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
         item.setZValue(30)
+        if background_color is not None:
+            padding_x = 5.0
+            padding_y = 3.0
+            bounds = item.boundingRect()
+            background_item = QGraphicsRectItem(
+                QRectF(
+                    bounds.left() - padding_x,
+                    bounds.top() - padding_y,
+                    bounds.width() + padding_x * 2,
+                    bounds.height() + padding_y * 2,
+                ),
+                item,
+            )
+            background_item.setBrush(QBrush(background_color))
+            background_item.setPen(QPen(Qt.PenStyle.NoPen))
+            background_item.setZValue(-1)
+            background_item.setFlag(
+                QGraphicsItem.GraphicsItemFlag.ItemStacksBehindParent,
+                True,
+            )
         self.scene().addItem(item)
         collection.append(item)
         return item
@@ -920,6 +971,8 @@ class ImageCanvas(QGraphicsView):
         image_name: str = "",
         image_name_color: str = "#ffffff",
         image_name_background: str = "",
+        measurement_label_background: bool = False,
+        measurement_label_background_alpha: int = LABEL_BACKGROUND_ALPHA,
     ) -> None:
         self.clear_overlays()
         for measurement in measurements:
@@ -982,6 +1035,16 @@ class ImageCanvas(QGraphicsView):
                 measurement_label(measurement, mm_per_pixel, display_unit),
                 color,
                 self._overlay_items,
+                (
+                    contrasting_label_background(
+                        color,
+                        measurement_label_background_alpha,
+                    )
+                    if measurement_label_background
+                    else None
+                ),
+                bold=True,
+                outline=False,
             )
             self._editable_labels.append((measurement.number, label_item))
         self._render_scale_bar(mm_per_pixel, scale_bar)
@@ -1372,21 +1435,50 @@ def put_cv_label(
     color: tuple[int, int, int],
     scale: float,
     thickness: int,
+    background_color: tuple[int, int, int] | None = None,
+    background_alpha: float = LABEL_BACKGROUND_ALPHA / 255.0,
+    shadow: bool = True,
 ) -> None:
     x, y = round(position[0]), round(position[1])
     x = max(4, min(image.shape[1] - 4, x))
     y = max(18, min(image.shape[0] - 4, y))
-    shadow_offset = max(1, thickness // 2)
-    cv2.putText(
-        image,
-        text,
-        (x + shadow_offset, y + shadow_offset),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        scale,
-        (10, 10, 10),
-        thickness,
-        cv2.LINE_AA,
-    )
+    if background_color is not None:
+        text_size, baseline = cv2.getTextSize(
+            text,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            scale,
+            thickness,
+        )
+        padding_x = max(4, round(scale * 6))
+        padding_y = max(3, round(scale * 4))
+        left = max(0, x - padding_x)
+        top = max(0, y - text_size[1] - padding_y)
+        right = min(image.shape[1], x + text_size[0] + padding_x)
+        bottom = min(image.shape[0], y + baseline + padding_y)
+        if right > left and bottom > top:
+            region = image[top:bottom, left:right]
+            background = np.empty_like(region)
+            background[:] = background_color
+            cv2.addWeighted(
+                background,
+                background_alpha,
+                region,
+                1.0 - background_alpha,
+                0.0,
+                dst=region,
+            )
+    if shadow:
+        shadow_offset = max(1, thickness // 2)
+        cv2.putText(
+            image,
+            text,
+            (x + shadow_offset, y + shadow_offset),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            scale,
+            (10, 10, 10),
+            thickness,
+            cv2.LINE_AA,
+        )
     cv2.putText(
         image,
         text,
@@ -1588,12 +1680,18 @@ def annotate_frame(
     image_name: str = "",
     image_name_color: str = "#ffffff",
     image_name_background: str = "",
+    measurement_label_background: bool = False,
+    measurement_label_background_alpha: int = LABEL_BACKGROUND_ALPHA,
 ) -> np.ndarray:
     image = frame.copy()
+    measurement_label_background_alpha = max(
+        0,
+        min(255, measurement_label_background_alpha),
+    )
     height, width = image.shape[:2]
     factor = max(0.65, min(2.0, width / 1600.0))
     thickness = max(1, round(factor * 2))
-    text_thickness = max(1, round(factor))
+    text_thickness = max(2, round(factor * 1.5))
 
     if crosshair:
         color = (70, 70, 255)
@@ -1617,7 +1715,19 @@ def annotate_frame(
     for measurement in measurements:
         points = measurement.points
         integer_points = [(round(point[0]), round(point[1])) for point in points]
-        color = cv_color(measurement)
+        qt_color = measurement_color(measurement)
+        color = qt_color.blue(), qt_color.green(), qt_color.red()
+        label_background_color: tuple[int, int, int] | None = None
+        if measurement_label_background:
+            qt_background = contrasting_label_background(
+                qt_color,
+                measurement_label_background_alpha,
+            )
+            label_background_color = (
+                qt_background.blue(),
+                qt_background.green(),
+                qt_background.red(),
+            )
 
         label = measurement_label(
             measurement, mm_per_pixel, display_unit, ascii_only=True
@@ -1690,6 +1800,9 @@ def annotate_frame(
             color,
             factor * 0.55,
             text_thickness,
+            label_background_color,
+            measurement_label_background_alpha / 255.0,
+            shadow=False,
         )
 
     draw_cv_scale_bar(image, mm_per_pixel, scale_bar)
@@ -2325,6 +2438,36 @@ class MainWindow(QMainWindow):
         group = CollapsibleSection("Résultats")
         layout = QVBoxLayout()
         group.set_content_layout(layout)
+
+        label_background_row = QHBoxLayout()
+        self.measurement_label_background_check = QCheckBox("Fond")
+        self.measurement_label_background_check.setToolTip(
+            "Ajouter un fond semi-transparent derrière toutes les valeurs "
+            "de mesure"
+        )
+        self.measurement_label_background_check.toggled.connect(
+            self.on_measurement_label_background_changed
+        )
+        label_background_row.addWidget(self.measurement_label_background_check)
+        label_background_row.addStretch(1)
+        label_background_row.addWidget(QLabel("Opacité"))
+        self.measurement_label_opacity = QSpinBox()
+        self.measurement_label_opacity.setRange(0, 100)
+        self.measurement_label_opacity.setValue(
+            LABEL_BACKGROUND_OPACITY_PERCENT
+        )
+        self.measurement_label_opacity.setSuffix(" %")
+        self.measurement_label_opacity.setKeyboardTracking(False)
+        self.measurement_label_opacity.setToolTip(
+            "0 % : fond invisible · 100 % : fond entièrement opaque"
+        )
+        self.measurement_label_opacity.setEnabled(False)
+        self.measurement_label_opacity.valueChanged.connect(
+            self.on_measurement_label_opacity_changed
+        )
+        label_background_row.addWidget(self.measurement_label_opacity)
+        layout.addLayout(label_background_row)
+
         self.results_table = QTableWidget(0, 5)
         self.results_table.setHorizontalHeaderLabels(
             ["N°", "Nom", "Type", "Valeur", "Couleur"]
@@ -2459,6 +2602,21 @@ class MainWindow(QMainWindow):
         self.magnifier_zoom_combo.setCurrentText(
             str(self.settings.value("measurement/magnifier_zoom", "800 %"))
         )
+        label_background_enabled = self.settings.value(
+            "measurement/label_background_enabled", False, type=bool
+        )
+        label_background_opacity = int(
+            self.settings.value(
+                "measurement/label_background_opacity",
+                LABEL_BACKGROUND_OPACITY_PERCENT,
+            )
+        )
+        self.measurement_label_opacity.setValue(
+            max(0, min(100, label_background_opacity))
+        )
+        self.measurement_label_background_check.setChecked(
+            label_background_enabled
+        )
         for key, section in self.sections.items():
             section.set_expanded(
                 self.settings.value(
@@ -2525,6 +2683,14 @@ class MainWindow(QMainWindow):
         self.settings.setValue(
             "measurement/magnifier_zoom",
             self.magnifier_zoom_combo.currentText(),
+        )
+        self.settings.setValue(
+            "measurement/label_background_enabled",
+            self.measurement_label_background_enabled(),
+        )
+        self.settings.setValue(
+            "measurement/label_background_opacity",
+            self.measurement_label_opacity.value(),
         )
         for key, section in self.sections.items():
             self.settings.setValue(
@@ -2790,10 +2956,31 @@ class MainWindow(QMainWindow):
             image_name,
             str(self.image_name_color.currentData() or "#ffffff"),
             str(self.image_name_background.currentData() or ""),
+            self.measurement_label_background_enabled(),
+            self.measurement_label_background_alpha(),
         )
 
     def on_image_name_changed(self, *_args) -> None:
         self.refresh_measurements()
+
+    def measurement_label_background_enabled(self) -> bool:
+        return self.measurement_label_background_check.isChecked()
+
+    def measurement_label_background_alpha(self) -> int:
+        return round(self.measurement_label_opacity.value() / 100 * 255)
+
+    def on_measurement_label_background_changed(self, *_args) -> None:
+        enabled = self.measurement_label_background_enabled()
+        self.measurement_label_opacity.setEnabled(enabled)
+        self.refresh_measurements()
+        state = "transparent" if enabled else "retiré"
+        self.statusBar().showMessage(f"Fond des annotations {state}.")
+
+    def on_measurement_label_opacity_changed(self, value: int) -> None:
+        self.refresh_measurements()
+        self.statusBar().showMessage(
+            f"Opacité du fond des annotations : {value} %."
+        )
 
     def selected_scale_bar(self) -> ScaleBar | None:
         if not self.scale_bar_check.isChecked():
@@ -3351,6 +3538,25 @@ class MainWindow(QMainWindow):
         self.image_name_background.setCurrentIndex(max(0, background_index))
         self.image_name_check.setChecked(bool(image_label.get("enabled", False)))
 
+        measurement_labels = metadata.get("measurement_labels", {})
+        if not isinstance(measurement_labels, dict):
+            measurement_labels = {}
+        raw_opacity = measurement_labels.get("background_opacity_percent")
+        if raw_opacity is None:
+            raw_alpha = measurement_labels.get(
+                "background_alpha",
+                LABEL_BACKGROUND_ALPHA,
+            )
+            raw_opacity = round(float(raw_alpha) / 255 * 100)
+        label_background_opacity = max(0, min(100, int(raw_opacity)))
+        self.measurement_label_opacity.setValue(label_background_opacity)
+        label_background_enabled = bool(
+            measurement_labels.get("background_enabled", False)
+        )
+        self.measurement_label_background_check.setChecked(
+            label_background_enabled
+        )
+
         user = metadata.get("user", {})
         if isinstance(user, dict):
             user_name = str(user.get("name", "")).strip()
@@ -3640,6 +3846,16 @@ class MainWindow(QMainWindow):
                     self.image_name_background.currentData() or ""
                 ),
             },
+            "measurement_labels": {
+                "background_enabled": (
+                    self.measurement_label_background_enabled()
+                ),
+                "background_style": "adaptive_translucent",
+                "background_opacity_percent": (
+                    self.measurement_label_opacity.value()
+                ),
+                "background_alpha": self.measurement_label_background_alpha(),
+            },
             "measurements": measurements,
         }
 
@@ -3700,6 +3916,8 @@ class MainWindow(QMainWindow):
                 image_name,
                 str(self.image_name_color.currentData() or "#ffffff"),
                 str(self.image_name_background.currentData() or ""),
+                self.measurement_label_background_enabled(),
+                self.measurement_label_background_alpha(),
             )
             annotated_path = output / f"{base_name}.png"
             annotated_metadata = self._build_capture_metadata(
